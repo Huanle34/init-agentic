@@ -47,21 +47,53 @@ project info, pick agents, MCPs, hooks, skills, and rules.
 
 ---
 
-## Run directly from terminal
+## How it works
+
+The skill has two separate responsibilities:
+
+| Part | What it does |
+|------|-------------|
+| **SKILL.md** (Claude) | Runs the wizard interactively — asks questions, does grilling, builds the JSON spec |
+| **`scripts/init_agentic.py`** (Python) | Pure file generator — reads the JSON spec and writes all project files |
+
+Claude collects answers → writes `~/.claude/.init_spec.json` → runs the Python script → deletes the spec file.
+
+## Run directly (two modes)
+
+### Terminal wizard — arrow-key TUI
+
+Interactive wizard with arrow-key navigation and space-to-toggle checkboxes.
+Runs entirely in your terminal, no Claude required.
 
 ```bash
-# Bootstrap current directory
-python3 ~/.claude/skills/init-agentic/scripts/init_agentic.py
+# Unix / macOS
+python3 ~/.claude/skills/init-agentic/scripts/init_agentic.py --wizard [target-directory]
 
-# Bootstrap a specific directory
-python3 ~/.claude/skills/init-agentic/scripts/init_agentic.py /path/to/project
+# Windows (PowerShell)
+python "$HOME\.claude\skills\init-agentic\scripts\init_agentic.py" --wizard [target-directory]
 ```
 
-**Windows (PowerShell):**
+Controls: `↑↓` move cursor · `Space` toggle checkbox · `Enter` confirm
 
-```powershell
-python "$HOME\.claude\skills\init-agentic\scripts\init_agentic.py"
+### From spec file — generator only
+
+If you already have a JSON spec (e.g. written by Claude via `/init-agentic`):
+
+```bash
+# Unix / macOS
+python3 ~/.claude/skills/init-agentic/scripts/init_agentic.py \
+  --from-spec spec.json [target-directory]
+
+# Windows (PowerShell)
+python "$HOME\.claude\skills\init-agentic\scripts\init_agentic.py" `
+  --from-spec spec.json [target-directory]
+
+# Read spec from stdin
+echo '{"name":"MyProject","description":"...","stack":"Python",...}' | \
+  python3 ~/.claude/skills/init-agentic/scripts/init_agentic.py --from-spec - .
 ```
+
+**Python 3.7+ required. No external libraries.**
 
 ---
 

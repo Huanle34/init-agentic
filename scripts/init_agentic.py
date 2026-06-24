@@ -1,21 +1,32 @@
 #!/usr/bin/env python3
 """
-init_agentic.py — Bootstrap a complete Claude Code agentic project structure.
+init_agentic.py — File generator + optional TUI wizard for init-agentic.
 
-Generates: CLAUDE.md, CLAUDE.local.md, .mcp.json, .claude/settings.json,
-           .claude/agents/, .claude/rules/, .claude/skills/, .claude/hooks/,
-           docs/adr/, docs/learnings.md, .claude/registry.md
+Two modes:
+  --from-spec FILE   Read JSON spec and generate files (Claude-driven flow)
+  --wizard [DIR]     Full interactive TUI wizard with arrow-key checkboxes
+
+Usage:
+    python init_agentic.py --from-spec spec.json [target-dir]
+    python init_agentic.py --wizard [target-dir]
+    python init_agentic.py --from-spec - [target-dir]   (stdin)
 """
 
 import os
 import re
 import sys
 import json
+import argparse
 import platform
 from pathlib import Path
 from datetime import date
 
-# Fix encoding on Windows (cp1252 -> utf-8)
+# ── Python version guard ──────────────────────────────────────────────────────
+if sys.version_info < (3, 7):
+    sys.stderr.write("Error: Python 3.7+ is required.\n")
+    sys.exit(1)
+
+
 def _setup_encoding():
     try:
         if hasattr(sys.stdout, "reconfigure"):
@@ -24,413 +35,62 @@ def _setup_encoding():
     except Exception:
         pass
 
+
 _setup_encoding()
 
 IS_WINDOWS = platform.system() == "Windows"
 
-# ── Colors ────────────────────────────────────────────────────────────────────
-CYAN   = "\033[96m"
-GREEN  = "\033[92m"
-YELLOW = "\033[93m"
-BOLD   = "\033[1m"
-RESET  = "\033[0m"
-DIM    = "\033[2m"
-RED    = "\033[91m"
 
-def h(text):    return f"{BOLD}{CYAN}{text}{RESET}"
-def ok(text):   return f"{GREEN}[ok]{RESET} {text}"
-def q(text):    return f"{YELLOW}?{RESET} {text}"
-def dim(text):  return f"{DIM}{text}{RESET}"
-def warn(text): return f"{RED}[!]{RESET} {text}"
-def ans(text):  return f"{CYAN}->{RESET} {text}"
-
-SEP = "=" * 52
-
-# ── i18n strings ──────────────────────────────────────────────────────────────
-STRINGS = {
-    "en": {
-        "title":        "  [INIT]  Init Agentic -- Bootstrap Claude Code Project",
-        "intro":        "  Answer each question. Press Enter to accept the default.",
-        "step1":        "STEP 1 -- Project info",
-        "project_name": "Project name",
-        "description":  "Short description (1-2 sentences about the goal)",
-        "step2":        "STEP 2 -- Tech stack",
-        "stack":        "Primary language / framework",
-        "run_cmd":      "Run / start command",
-        "test_cmd":     "Test command",
-        "lint_cmd":     "Lint command",
-        "step3":        "STEP 3 -- Agents",
-        "agents_q":     "Select agents for this project",
-        "step4":        "STEP 4 -- MCP integrations",
-        "mcps_q":       "Select MCP servers to connect (skip if not needed yet)",
-        "step5":        "STEP 5 -- Hooks (quality gates)",
-        "hooks_q":      "Select hooks to enable",
-        "hook_pre":     "pre-write (lint before write)",
-        "hook_post":    "post-edit (test after edit)",
-        "step6":        "STEP 6 -- Skills",
-        "skills_q":     "Select skill templates to generate",
-        "step7":        "STEP 7 -- Code style rules (.claude/rules/)",
-        "rules_q":      "Select code style rule files to generate",
-        "confirm":      "  Confirm -- files to be generated:",
-        "grill_q":      "Enable Grilling Mode -- stress-test the plan before building? (y/n)",
-        "proceed_q":    "Proceed with file generation? (y/n)",
-        "cancelled":    "  Cancelled.",
-        "generating":   "Generating files...",
-        "done":         "  [DONE]  Bootstrap complete!",
-        "next_steps":   "Next steps:",
-        "hint":         "(enter numbers separated by commas, e.g. 1,3 -- or Enter to skip)",
-        "grill_title":  "  [GRILL]  Grilling Phase -- Stress-test your plan",
-        "grill_intro":  "  Answer honestly. Press Enter to skip a question.",
-        "grill_you":    "You",
-        "grill_done":   "Grilling complete -- {done}/{total} questions answered.",
-        "recorded":     "Recorded.",
-        "skipped":      "Skipped.",
-        "label_project": "Project",
-        "label_stack":   "Stack",
-        "label_agents":  "Agents",
-        "label_mcps":    "MCPs",
-        "label_hooks":   "Hooks",
-        "label_skills":  "Skills",
-        "label_rules":   "Rules",
-        "label_location": "Location",
-        "label_output":  "Output structure:",
-        "next1": "Add {BOLD}CLAUDE.local.md{RESET} to your .gitignore",
-        "next2": "Review {BOLD}CLAUDE.md{RESET} -- fill in any TODO commands",
-        "next3": "Open Claude Code: {BOLD}claude{RESET}",
-        "next4": "Run {BOLD}/memory{RESET} to see your auto memory state",
-        "next5": "Connect MCP servers in Claude Code settings",
-        "portfolio_ok":   "Portfolio Registry updated in",
-        "portfolio_fail": "Could not auto-update Portfolio Registry.",
-        "portfolio_hint": "Add this row manually to the Portfolio Registry in",
-        "agents_invoke":  "Invoke agents: @agent-orchestrator, @agent-code-reviewer, etc.",
-        "agents_auto":    "Agents auto-delegate based on their description field.",
-    },
-    "vi": {
-        "title":        "  [INIT]  Init Agentic -- Khởi tạo Claude Code Project",
-        "intro":        "  Trả lời từng câu. Nhấn Enter để dùng giá trị mặc định.",
-        "step1":        "BƯỚC 1 -- Thông tin project",
-        "project_name": "Tên project",
-        "description":  "Mô tả ngắn (1-2 câu về mục tiêu)",
-        "step2":        "BƯỚC 2 -- Tech stack",
-        "stack":        "Ngôn ngữ / framework chính",
-        "run_cmd":      "Lệnh chạy / khởi động",
-        "test_cmd":     "Lệnh chạy test",
-        "lint_cmd":     "Lệnh lint",
-        "step3":        "BƯỚC 3 -- Agents",
-        "agents_q":     "Chọn agents cho project này",
-        "step4":        "BƯỚC 4 -- MCP integrations",
-        "mcps_q":       "Chọn MCP servers cần kết nối (bỏ qua nếu chưa cần)",
-        "step5":        "BƯỚC 5 -- Hooks (quality gates)",
-        "hooks_q":      "Chọn hooks muốn bật",
-        "hook_pre":     "pre-write (lint trước khi write)",
-        "hook_post":    "post-edit (test sau khi edit)",
-        "step6":        "BƯỚC 6 -- Skills",
-        "skills_q":     "Chọn skill templates cần tạo",
-        "step7":        "BƯỚC 7 -- Code style rules (.claude/rules/)",
-        "rules_q":      "Chọn rule files cần tạo",
-        "confirm":      "  Xác nhận -- các files sẽ được tạo:",
-        "grill_q":      "Bật Grilling Mode -- stress-test plan trước khi build? (y/n)",
-        "proceed_q":    "Tiến hành tạo files? (y/n)",
-        "cancelled":    "  Đã hủy.",
-        "generating":   "Đang tạo files...",
-        "done":         "  [DONE]  Bootstrap hoàn thành!",
-        "next_steps":   "Bước tiếp theo:",
-        "hint":         "(nhập số cách nhau bằng dấu phẩy, vd 1,3 -- hoặc Enter để bỏ qua)",
-        "grill_title":  "  [GRILL]  Grilling Phase -- Stress-test kế hoạch",
-        "grill_intro":  "  Trả lời thật lòng. Nhấn Enter để bỏ qua.",
-        "grill_you":    "Bạn",
-        "grill_done":   "Grilling hoàn tất -- {done}/{total} câu đã trả lời.",
-        "recorded":     "Đã ghi nhận.",
-        "skipped":      "Bỏ qua.",
-        "label_project": "Project",
-        "label_stack":   "Stack",
-        "label_agents":  "Agents",
-        "label_mcps":    "MCPs",
-        "label_hooks":   "Hooks",
-        "label_skills":  "Skills",
-        "label_rules":   "Rules",
-        "label_location": "Vị trí",
-        "label_output":  "Cấu trúc output:",
-        "next1": "Thêm {BOLD}CLAUDE.local.md{RESET} vào .gitignore",
-        "next2": "Review {BOLD}CLAUDE.md{RESET} -- điền lệnh còn TODO",
-        "next3": "Mở Claude Code: {BOLD}claude{RESET}",
-        "next4": "Chạy {BOLD}/memory{RESET} để xem auto memory",
-        "next5": "Kết nối MCP servers trong Claude Code settings",
-        "portfolio_ok":   "Portfolio Registry đã được cập nhật trong",
-        "portfolio_fail": "Không thể tự động cập nhật Portfolio Registry.",
-        "portfolio_hint": "Tự thêm dòng này vào Portfolio Registry trong",
-        "agents_invoke":  "Gọi agents: @agent-orchestrator, @agent-code-reviewer, ...",
-        "agents_auto":    "Agents tự delegate dựa trên trường description của chúng.",
-    },
-}
-
-
-def select_language() -> str:
-    """Bilingual first question — returns 'en' or 'vi'."""
-    print(f"\n{h(SEP)}")
-    print(f"{h('  [INIT]  Init Agentic')}")
-    print(f"{h(SEP)}")
-    print(f"\n  Select language / Chọn ngôn ngữ:\n")
-    print(f"  {dim('1.')} English")
-    print(f"  {dim('2.')} Tiếng Việt")
-    try:
-        raw = input(f"\n{YELLOW}>{RESET} ").strip()
-    except (EOFError, KeyboardInterrupt):
-        print()
-        sys.exit(0)
-    return "vi" if raw == "2" else "en"
-
-
-# ── Grilling engine ───────────────────────────────────────────────────────────
-def make_grilling_tree(info: dict) -> list:
-    """Generate project-specific grilling questions with contextual recommendations."""
-    name  = info["name"]
-    desc  = info["description"].rstrip(".")
-    stack = info["stack"]
-    desc60 = desc[:60] + "..." if len(desc) > 60 else desc
-
-    return [
-        {
-            "key": "core_problem",
-            "branch": "Goals & Scope",
-            "question": "What core problem does this project solve — if it didn't exist, what would the user do instead?",
-            "recommendation": (
-                f"Draft: '{name} exists because [specific user] cannot {desc60.lower()} "
-                f"without [root bottleneck]. Without it, they [current painful workaround].'"
-            ),
-        },
-        {
-            "key": "success_metric",
-            "branch": "Goals & Scope",
-            "question": "What does 'success' look like after 30 days? A specific number?",
-            "recommendation": (
-                f"Pick 1 metric for {name}: e.g., '[N] {stack} tasks automated/day', "
-                f"'[X]% manual work eliminated', or '[N] pipeline runs without intervention'."
-            ),
-        },
-        {
-            "key": "out_of_scope",
-            "branch": "Goals & Scope",
-            "question": "What is explicitly NOT in scope for v1 — even if it sounds good?",
-            "recommendation": (
-                f"For a {stack} v1, cut at least 3: real-time streaming, multi-env deploy, "
-                f"UI dashboard, access control, historical backfill -- "
-                f"focus only on core {desc60.lower()}."
-            ),
-        },
-        {
-            "key": "primary_user",
-            "branch": "Users",
-            "question": "Who is your first user — a specific person, not 'everyone'?",
-            "recommendation": (
-                f"Name one real person who will use {name} first: "
-                f"e.g., 'Alex, Analytics Engineer, runs {stack} queries daily, "
-                f"currently spends 2h/day on manual checks.'"
-            ),
-        },
-        {
-            "key": "user_workflow",
-            "branch": "Users",
-            "question": "Before this tool exists, how does that user do this workflow today? How long does it take?",
-            "recommendation": (
-                f"Walk their current steps with {stack}: 1) open console, 2) run query manually, "
-                f"3) copy result, 4) format & send -- biggest time sink = build that first."
-            ),
-        },
-        {
-            "key": "data_model",
-            "branch": "Architecture",
-            "question": "What are the core entities in your system and how do they relate?",
-            "recommendation": (
-                f"For {name} on {stack}: sketch 3-5 core tables/models. "
-                f"E.g., events -> sessions -> users -> metrics. "
-                f"Unclear model = major refactors later."
-            ),
-        },
-        {
-            "key": "state_management",
-            "branch": "Architecture",
-            "question": "Where is system state stored — who reads it, who writes it, when?",
-            "recommendation": (
-                f"For {stack}: source of truth = [primary warehouse], "
-                f"incremental state = [run metadata / watermark table], "
-                f"writer = pipeline, reader = analysts + BI tools."
-            ),
-        },
-        {
-            "key": "integration_points",
-            "branch": "Architecture",
-            "question": "What external services does this system depend on — and what happens if they go down?",
-            "recommendation": (
-                f"List each {name} dependency: source DBs, {stack} APIs, scheduler. "
-                f"For each: fallback = retry / stale cache / alert? "
-                f"Sync or async? Who owns the contract?"
-            ),
-        },
-        {
-            "key": "biggest_risk",
-            "branch": "Risks",
-            "question": "What could make this project fail completely in the first 3 months?",
-            "recommendation": (
-                f"Top risks for {name}: wrong assumption about source data quality, "
-                f"{stack} dialect issues in prod, no stakeholder adoption, scope creep. "
-                f"Which is highest? Prove it false before writing business logic."
-            ),
-        },
-        {
-            "key": "hardest_part",
-            "branch": "Risks",
-            "question": "Which technical part don't you know how to build yet — needs a spike first?",
-            "recommendation": (
-                f"On {stack}: which part is unproven -- incremental strategy, "
-                f"cross-source join, scheduler trigger, data contract? "
-                f"Build the smallest spike to validate it before the rest."
-            ),
-        },
-        {
-            "key": "agent_boundaries",
-            "branch": "Agentic Design",
-            "question": "Does each agent have clear boundaries — what does each one explicitly NOT do?",
-            "recommendation": (
-                f"For {name}: orchestrator delegates only, never writes {stack} code. "
-                f"sql-reviewer reads only, never runs queries. "
-                f"data-validator checks output only, never modifies data."
-            ),
-        },
-        {
-            "key": "human_in_loop",
-            "branch": "Agentic Design",
-            "question": "At which points is human approval required — where can't agents decide on their own?",
-            "recommendation": (
-                f"For {name}: require human sign-off before -- promoting to production, "
-                f"deleting or truncating {stack} tables, sending external reports or alerts, "
-                f"any schema migration on live data."
-            ),
-        },
-    ]
-
-
-def run_grilling(info: dict, lang: str = "en") -> list:
-    s = STRINGS[lang]
-    print(f"\n{h(SEP)}")
-    print(f"{h(s['grill_title'])}")
-    print(f"{h(SEP)}")
-    print(dim(f"  Project: {info['name']} -- {info['description']}"))
-    print(dim(f"  {s['grill_intro']}\n"))
-
-    decisions = []
-    current_branch = None
-    grilling_tree = make_grilling_tree(info)
-    total = len(grilling_tree)
-
-    for i, item in enumerate(grilling_tree, 1):
-        if item["branch"] != current_branch:
-            current_branch = item["branch"]
-            print(f"\n  {BOLD}-- {current_branch} --{RESET}")
-
-        print(f"\n  {dim(f'[{i}/{total}]')} {BOLD}{item['question']}{RESET}")
-        print(f"\n  {dim('1.')} {ans(item['recommendation'])}")
-        print(dim(f"  (type 1 to accept -- or enter your own answer -- Enter to skip)"))
-
+def _supports_ansi() -> bool:
+    if not sys.stdout.isatty():
+        return False
+    if IS_WINDOWS:
         try:
-            answer = input(f"\n  {YELLOW}{s['grill_you']}:{RESET} ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            break
-
-        if answer == "1":
-            answer = item["recommendation"]
-
-        if answer:
-            decisions.append({
-                "key": item["key"],
-                "branch": item["branch"],
-                "question": item["question"],
-                "recommendation": item["recommendation"],
-                "answer": answer,
-            })
-            print(f"  {ok(s['recorded'])}")
-        else:
-            print(f"  {dim(s['skipped'])}")
-
-    done_msg = s["grill_done"].format(done=len(decisions), total=total)
-    print(f"\n  {ok(done_msg)}")
-    return decisions
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
+            return True
+        except Exception:
+            return False
+    return True
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-def ask(prompt, default=""):
-    suffix = f" {dim(f'[{default}]')}" if default else ""
-    try:
-        val = input(f"{q(prompt)}{suffix}: ").strip()
-    except (EOFError, KeyboardInterrupt):
-        print()
-        sys.exit(0)
-    return val if val else default
+_ANSI = _supports_ansi()
+
+CYAN  = "\033[96m" if _ANSI else ""
+GREEN = "\033[92m" if _ANSI else ""
+YELLOW= "\033[93m" if _ANSI else ""
+BOLD  = "\033[1m"  if _ANSI else ""
+RESET = "\033[0m"  if _ANSI else ""
+DIM   = "\033[2m"  if _ANSI else ""
+RED   = "\033[91m" if _ANSI else ""
+SEP   = "=" * 52
 
 
-def ask_multi(prompt, options, defaults=None, hint=""):
-    print(f"\n{q(prompt)}")
-    for i, opt in enumerate(options, 1):
-        marker = "*" if defaults and opt in defaults else " "
-        print(f"  {dim(str(i)+'.')} {opt}  {dim(marker) if marker == '*' else ''}")
-    print(dim(f"  {hint}"))
-    try:
-        raw = input(f"{YELLOW}>{RESET} ").strip()
-    except (EOFError, KeyboardInterrupt):
-        print()
-        sys.exit(0)
-    if not raw:
-        return defaults or []
-    chosen = []
-    for part in raw.split(","):
-        part = part.strip()
-        if part.isdigit():
-            idx = int(part) - 1
-            if 0 <= idx < len(options):
-                chosen.append(options[idx])
-    return chosen if chosen else (defaults or [])
+def h(t):    return f"{BOLD}{CYAN}{t}{RESET}"
+def ok(t):   return f"{GREEN}[ok]{RESET} {t}"
+def warn(t): return f"{RED}[!]{RESET} {t}"
+def dim(t):  return f"{DIM}{t}{RESET}"
+def q(t):    return f"{YELLOW}?{RESET} {t}"
 
 
-def write_file(path: Path, content: str):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
-    print(ok(f"Generated: {path}"))
-
-
-def extract_description(template_str: str) -> str:
-    """Parse the description field out of an agent template's frontmatter."""
-    match = re.search(r"^---\n(.*?)\n---", template_str, re.DOTALL)
-    if not match:
-        return ""
-    frontmatter = match.group(1)
-    # Multiline description (> block)
-    block = re.search(r"^description:\s*>\s*\n((?:[ \t]+.+\n?)+)", frontmatter, re.MULTILINE)
-    if block:
-        lines = [ln.strip() for ln in block.group(1).strip().splitlines() if ln.strip()]
-        return " ".join(lines)
-    # Single-line description
-    single = re.search(r"^description:\s*(.+)$", frontmatter, re.MULTILINE)
-    if single:
-        return single.group(1).strip()
-    return ""
-
+# ── Model versions ────────────────────────────────────────────────────────────
+MODEL_OPUS   = "claude-opus-4-7"
+MODEL_SONNET = "claude-sonnet-4-6"
 
 # ── MCP catalog ───────────────────────────────────────────────────────────────
 MCP_CATALOG = {
-    "GitHub": {"type": "url", "url": "https://api.githubcopilot.com/mcp/", "name": "github"},
-    "Notion": {"type": "url", "url": "https://mcp.notion.com/mcp", "name": "notion"},
-    "Atlassian (Jira/Confluence)": {"type": "url", "url": "https://mcp.atlassian.com/v1/mcp", "name": "atlassian"},
-    "Google Drive": {"type": "url", "url": "https://drivemcp.googleapis.com/mcp/v1", "name": "google-drive"},
-    "Gmail": {"type": "url", "url": "https://gmailmcp.googleapis.com/mcp/v1", "name": "gmail"},
-    "Slack": {"type": "url", "url": "https://mcp.slack.com/mcp", "name": "slack"},
-    "Postman": {"type": "url", "url": "https://mcp.postman.com/minimal", "name": "postman"},
-    "Figma": {"type": "url", "url": "https://mcp.figma.com/mcp", "name": "figma"},
+    "GitHub":                     {"type": "url", "url": "https://api.githubcopilot.com/mcp/",    "name": "github"},
+    "Notion":                     {"type": "url", "url": "https://mcp.notion.com/mcp",             "name": "notion"},
+    "Atlassian (Jira/Confluence)": {"type": "url", "url": "https://mcp.atlassian.com/v1/mcp",     "name": "atlassian"},
+    "Google Drive":               {"type": "url", "url": "https://drivemcp.googleapis.com/mcp/v1", "name": "google-drive"},
+    "Gmail":                      {"type": "url", "url": "https://gmailmcp.googleapis.com/mcp/v1", "name": "gmail"},
+    "Slack":                      {"type": "url", "url": "https://mcp.slack.com/mcp",              "name": "slack"},
+    "Postman":                    {"type": "url", "url": "https://mcp.postman.com/minimal",        "name": "postman"},
+    "Figma":                      {"type": "url", "url": "https://mcp.figma.com/mcp",              "name": "figma"},
 }
 
 # ── Agent templates ───────────────────────────────────────────────────────────
-# description field is read by Claude on every turn for auto-delegation routing.
-# Be specific: state WHEN to invoke and what NOT to use this agent for.
 AGENT_TEMPLATES = {
     "orchestrator": """\
 ---
@@ -440,7 +100,7 @@ description: >
   Auto-invoked when the request spans multiple steps or agents
   (e.g. "build feature X end-to-end", "plan the auth flow", "coordinate a refactor").
   NOT for: single-step edits, quick questions, running tests directly.
-model: claude-opus-4-7
+model: @MODEL_OPUS@
 effort: high
 maxTurns: 30
 ---
@@ -461,7 +121,7 @@ Receive high-level requests, break them into subtasks, and delegate:
 5. Append a brief summary to `CLAUDE.local.md` when done
 
 ## Principles
-- Plan before coding — write the plan as a checklist first
+- Plan before coding -- write the plan as a checklist first
 - Do not self-approve changes to production, data deletion, or external communications
 - Record significant architectural decisions in `docs/adr/`
 """,
@@ -474,7 +134,7 @@ description: >
   Auto-invoked after code is written and before committing.
   Checks logic correctness, security, naming, test coverage, and performance.
   NOT for: writing new code, fixing bugs, running tests, deployment.
-model: claude-sonnet-4-6
+model: @MODEL_SONNET@
 effort: medium
 maxTurns: 15
 disallowedTools:
@@ -520,7 +180,7 @@ description: >
   Auto-invoked to verify a feature works or after a bug fix.
   Runs the test suite, analyzes failures, writes a pass/fail report.
   NOT for: writing application code, reviewing code, deployment.
-model: claude-sonnet-4-6
+model: @MODEL_SONNET@
 effort: medium
 maxTurns: 20
 ---
@@ -558,7 +218,7 @@ description: >
   Auto-invoked when a new feature is added or the API changes.
   Updates README, docs/, CHANGELOG. Does not modify application source code.
   NOT for: writing application code, running tests, deployment.
-model: claude-sonnet-4-6
+model: @MODEL_SONNET@
 effort: low
 maxTurns: 10
 disallowedTools:
@@ -588,7 +248,7 @@ description: >
   Auto-invoked when the request involves requirements analysis, writing specs,
   defining business rules, data flow diagrams, or sign-off decisions.
   NOT for: implementation, writing code, running queries, deployment.
-model: claude-opus-4-7
+model: @MODEL_OPUS@
 effort: high
 maxTurns: 20
 disallowedTools:
@@ -600,7 +260,7 @@ You are the Business Analyst for project **{name}**.
 
 ## Role
 Translate business needs into clear, unambiguous specifications that engineers
-can implement without guessing. You define WHAT and WHY — never HOW.
+can implement without guessing. You define WHAT and WHY -- never HOW.
 
 ## Deliverables
 - **Requirement specs** -- written to `workspace/ba/` in markdown
@@ -629,7 +289,7 @@ description: >
   Auto-invoked after writing a dbt model or BigQuery SQL query, before committing.
   Checks SQL correctness, BigQuery dialect, CTE structure, performance, and naming.
   NOT for: writing SQL, running queries, deployment.
-model: claude-sonnet-4-6
+model: @MODEL_SONNET@
 effort: medium
 maxTurns: 15
 disallowedTools:
@@ -677,7 +337,7 @@ description: >
   Auto-invoked after a dbt run or pipeline execution to verify output data.
   Checks row counts, nulls, schema drift, referential integrity, business rules.
   NOT for: writing code, reviewing SQL, deployment decisions.
-model: claude-sonnet-4-6
+model: @MODEL_SONNET@
 effort: medium
 maxTurns: 20
 ---
@@ -720,13 +380,15 @@ You are the Data Validator for project **{name}**.
 """,
 }
 
+for _k in AGENT_TEMPLATES:
+    AGENT_TEMPLATES[_k] = (AGENT_TEMPLATES[_k]
+                           .replace("@MODEL_OPUS@", MODEL_OPUS)
+                           .replace("@MODEL_SONNET@", MODEL_SONNET))
+
 # ── Rules templates ───────────────────────────────────────────────────────────
-# Rules in .claude/rules/ are loaded by Claude Code automatically:
-#   - files WITHOUT paths: -> loaded every session (like CLAUDE.md)
-#   - files WITH paths:    -> loaded only when a matching file enters context
 RULES_TEMPLATES = {
     "general": {
-        "display": "general (no path filter -- always loaded)",
+        "display":  "general (no path filter -- always loaded)",
         "filename": "general.md",
         "content": """\
 # General Coding Rules
@@ -740,9 +402,9 @@ RULES_TEMPLATES = {
 """,
     },
     "python": {
-        "display": "python (**/*.py)",
+        "display":  "python (**/*.py)",
         "filename": "python-style.md",
-        "paths": ["**/*.py"],
+        "paths":    ["**/*.py"],
         "content": """\
 # Python Style Rules
 
@@ -756,9 +418,9 @@ RULES_TEMPLATES = {
 """,
     },
     "typescript": {
-        "display": "typescript (**/*.{ts,tsx,js,jsx})",
+        "display":  "typescript (**/*.{ts,tsx,js,jsx})",
         "filename": "typescript-style.md",
-        "paths": ["**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx"],
+        "paths":    ["**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx"],
         "content": """\
 # TypeScript Style Rules
 
@@ -772,9 +434,9 @@ RULES_TEMPLATES = {
 """,
     },
     "sql": {
-        "display": "sql (**/*.sql)",
+        "display":  "sql (**/*.sql)",
         "filename": "sql-style.md",
-        "paths": ["**/*.sql"],
+        "paths":    ["**/*.sql"],
         "content": """\
 # SQL Style Rules
 
@@ -790,6 +452,307 @@ RULES_TEMPLATES = {
 }
 
 
+# ── TUI: arrow-key checkbox (wizard mode) ─────────────────────────────────────
+def _read_key() -> str:
+    """Read one keypress. Returns: 'up' | 'down' | 'space' | 'enter' | 'other'."""
+    if IS_WINDOWS:
+        import msvcrt
+        b = msvcrt.getch()
+        if b in (b'\xe0', b'\x00'):
+            b2 = msvcrt.getch()
+            if b2 == b'H': return 'up'
+            if b2 == b'P': return 'down'
+            return 'other'
+        if b == b' ':            return 'space'
+        if b in (b'\r', b'\n'): return 'enter'
+        if b == b'\x03':         raise KeyboardInterrupt
+        return 'other'
+    else:
+        import tty
+        import termios
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            ch = sys.stdin.buffer.read(1)
+            if ch == b'\x1b':
+                rest = sys.stdin.buffer.read(2)
+                if rest == b'[A': return 'up'
+                if rest == b'[B': return 'down'
+                return 'other'
+            if ch == b' ':            return 'space'
+            if ch in (b'\r', b'\n'): return 'enter'
+            if ch == b'\x03':         raise KeyboardInterrupt
+            return 'other'
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def _ask_checkbox_tui(prompt: str, options: list, defaults=None, hint: str = "") -> list:
+    """Arrow-key navigable checkbox. Requires ANSI + TTY."""
+    selected = list(defaults or [])
+    cursor   = 0
+    n        = len(options)
+    lines    = 0  # lines printed so far (for redraw)
+
+    def render():
+        nonlocal lines
+        if lines:
+            sys.stdout.write(f"\033[{lines}A\033[J")
+        sys.stdout.write(f"\n{q(prompt)}\n")
+        for i, opt in enumerate(options):
+            mark  = f"{GREEN}x{RESET}" if opt in selected else " "
+            arrow = f"{CYAN}>{RESET}" if i == cursor else " "
+            sys.stdout.write(f"  {arrow} [{mark}] {opt}\n")
+        sys.stdout.write(dim(f"  {hint}\n"))
+        sys.stdout.flush()
+        lines = n + 3  # prompt line + n options + hint line
+
+    render()
+    while True:
+        try:
+            key = _read_key()
+        except KeyboardInterrupt:
+            print()
+            sys.exit(0)
+        if key == 'up':
+            cursor = (cursor - 1) % n
+        elif key == 'down':
+            cursor = (cursor + 1) % n
+        elif key == 'space':
+            opt = options[cursor]
+            if opt in selected:
+                selected.remove(opt)
+            else:
+                selected.append(opt)
+        elif key == 'enter':
+            print()
+            return selected
+        render()
+
+
+def _ask_checkbox_num(prompt: str, options: list, defaults=None, hint: str = "") -> list:
+    """Number-input fallback when TUI is unavailable."""
+    selected = list(defaults or [])
+    while True:
+        print(f"\n{q(prompt)}")
+        for i, opt in enumerate(options, 1):
+            mark = f"{GREEN}x{RESET}" if opt in selected else " "
+            print(f"  {i}. [{mark}] {opt}")
+        print(dim(f"  {hint}"))
+        try:
+            raw = input(f"{YELLOW}>{RESET} ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            sys.exit(0)
+        if not raw:
+            return selected
+        for part in raw.replace(",", " ").split():
+            if part.isdigit():
+                idx = int(part) - 1
+                if 0 <= idx < len(options):
+                    opt = options[idx]
+                    if opt in selected:
+                        selected.remove(opt)
+                    else:
+                        selected.append(opt)
+
+
+def ask_checkbox(prompt: str, options: list, defaults=None, hint: str = "") -> list:
+    """Auto-selects TUI (arrow keys) or number input based on terminal capabilities."""
+    tui_hint = "↑↓ move   Space toggle   Enter confirm"
+    num_hint = "type number to toggle, Enter to confirm"
+    if _ANSI and sys.stdin.isatty():
+        return _ask_checkbox_tui(prompt, options, defaults, tui_hint)
+    return _ask_checkbox_num(prompt, options, defaults, num_hint)
+
+
+def ask_text(prompt: str, default: str = "") -> str:
+    suffix = f" {dim(f'[{default}]')}" if default else ""
+    try:
+        val = input(f"{q(prompt)}{suffix}: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        sys.exit(0)
+    return val if val else default
+
+
+# ── Wizard TUI ────────────────────────────────────────────────────────────────
+GRILLING_QUESTIONS = [
+    ("Goals & Scope",  "What core problem does this project solve? Format: '[User X] cannot [do Y] without [Z]'"),
+    ("Goals & Scope",  "What does success look like after 30 days? One specific, measurable metric."),
+    ("Goals & Scope",  "What is explicitly NOT in scope for v1? List at least 3 things cut."),
+    ("Users",          "Who is the first user — a specific person, not 'everyone'?"),
+    ("Users",          "How does that user do this workflow today, without this tool? How long does it take?"),
+    ("Architecture",   "What are the core entities in your system and how do they relate?"),
+    ("Architecture",   "Where is system state stored — who reads it, who writes it, when?"),
+    ("Architecture",   "What external services does this depend on — and if they go down?"),
+    ("Risks",          "What could make this project fail completely in the first 3 months?"),
+    ("Risks",          "Which technical part is unknown — needs a spike before building business logic?"),
+    ("Agentic Design", "Does each agent have clear boundaries — what does each one NOT do?"),
+    ("Agentic Design", "At which points is human approval required — where can't agents decide?"),
+]
+
+
+def run_wizard_tui() -> dict:
+    """Full interactive TUI wizard. Returns a spec dict ready for generate_files()."""
+    print(f"\n{h(SEP)}")
+    print(f"{h('  [INIT]  Init Agentic -- Bootstrap Claude Code Project')}")
+    print(f"{h(SEP)}")
+
+    # Language
+    lang_choice = ask_checkbox(
+        "Select language / Chọn ngôn ngữ",
+        ["English", "Tiếng Việt"],
+        defaults=["English"],
+    )
+    lang = "vi" if "Tiếng Việt" in lang_choice else "en"
+
+    print(f"\n{h('STEP 1 -- Project info' if lang == 'en' else 'BƯỚC 1 -- Thông tin project')}")
+    name = ask_text("Project name" if lang == "en" else "Tên project",
+                    default=Path.cwd().name)
+    desc = ask_text("Short description (1-2 sentences)" if lang == "en" else "Mô tả ngắn (1-2 câu)",
+                    default="")
+    if not desc:
+        desc = f"Project {name}."
+
+    print(f"\n{h('STEP 2 -- Tech stack' if lang == 'en' else 'BƯỚC 2 -- Tech stack')}")
+    stack    = ask_text("Primary language / framework" if lang == "en" else "Ngôn ngữ / framework chính", "Python")
+    run_cmd  = ask_text("Run command (optional)" if lang == "en" else "Lệnh chạy (tuỳ chọn)", "")
+    test_cmd = ask_text("Test command (optional)" if lang == "en" else "Lệnh test (tuỳ chọn)", "")
+    lint_cmd = ask_text("Lint command (optional)" if lang == "en" else "Lệnh lint (tuỳ chọn)", "")
+
+    print(f"\n{h('STEP 3 -- Agents' if lang == 'en' else 'BƯỚC 3 -- Agents')}")
+    chosen_agents = ask_checkbox(
+        "Select agents" if lang == "en" else "Chọn agents",
+        list(AGENT_TEMPLATES.keys()),
+        defaults=[],
+    )
+
+    print(f"\n{h('STEP 4 -- MCP integrations' if lang == 'en' else 'BƯỚC 4 -- MCP integrations')}")
+    chosen_mcps = ask_checkbox(
+        "Select MCP servers (optional)" if lang == "en" else "Chọn MCP servers (tuỳ chọn)",
+        list(MCP_CATALOG.keys()),
+        defaults=[],
+    )
+
+    print(f"\n{h('STEP 5 -- Hooks' if lang == 'en' else 'BƯỚC 5 -- Hooks')}")
+    hook_labels     = ["pre-write (lint before write)", "post-edit (test after edit)"]
+    chosen_hooks_raw = ask_checkbox(
+        "Select hooks" if lang == "en" else "Chọn hooks",
+        hook_labels,
+        defaults=hook_labels,
+    )
+    chosen_hooks = []
+    if any("pre-write" in h_ for h_ in chosen_hooks_raw): chosen_hooks.append("pre-write")
+    if any("post-edit" in h_ for h_ in chosen_hooks_raw): chosen_hooks.append("post-edit")
+
+    print(f"\n{h('STEP 6 -- Skills' if lang == 'en' else 'BƯỚC 6 -- Skills')}")
+    skill_options = [
+        "build-feature (implement a new feature end-to-end)",
+        "deploy (deploy to staging or production)",
+        "debug (systematic debugging workflow)",
+        "refactor (improve code quality without changing behavior)",
+    ]
+    chosen_skills_raw = ask_checkbox(
+        "Select skill templates" if lang == "en" else "Chọn skill templates",
+        skill_options,
+        defaults=[],
+    )
+    chosen_skills = [s.split(" ")[0] for s in chosen_skills_raw]
+
+    print(f"\n{h('STEP 7 -- Code style rules' if lang == 'en' else 'BƯỚC 7 -- Code style rules')}")
+    rule_options = [RULES_TEMPLATES[k]["display"] for k in RULES_TEMPLATES]
+    rule_keys    = list(RULES_TEMPLATES.keys())
+    sl = stack.lower()
+    auto_defaults = [RULES_TEMPLATES["general"]["display"]]
+    if "python" in sl: auto_defaults.append(RULES_TEMPLATES["python"]["display"])
+    if any(x in sl for x in ["typescript","javascript","react","node","next","vue"]):
+        auto_defaults.append(RULES_TEMPLATES["typescript"]["display"])
+    if any(x in sl for x in ["sql","dbt","bigquery","postgres","mysql","snowflake"]):
+        auto_defaults.append(RULES_TEMPLATES["sql"]["display"])
+    chosen_rule_displays = ask_checkbox(
+        "Select code style rules" if lang == "en" else "Chọn code style rules",
+        rule_options,
+        defaults=auto_defaults,
+    )
+    chosen_rules = [rule_keys[i] for i, d in enumerate(rule_options) if d in chosen_rule_displays]
+
+    # Summary
+    none_label = "none" if lang == "en" else "không có"
+    print(f"\n{h(SEP)}")
+    print(f"  {'Project':10s}: {BOLD}{name}{RESET}")
+    print(f"  {'Stack':10s}: {stack}")
+    print(f"  {'Agents':10s}: {', '.join(chosen_agents) or none_label}")
+    print(f"  {'MCPs':10s}: {', '.join(chosen_mcps) or none_label}")
+    print(f"  {'Hooks':10s}: {', '.join(chosen_hooks) or none_label}")
+    print(f"  {'Skills':10s}: {', '.join(chosen_skills) or none_label}")
+    print(f"  {'Rules':10s}: {', '.join(chosen_rules) or none_label}")
+    print(f"{h(SEP)}")
+
+    # Grilling
+    grill_q = "Enable Grilling Mode? (y/n)" if lang == "en" else "Bật Grilling Mode? (y/n)"
+    want_grill = ask_text(grill_q, "n")
+    grilling_decisions = []
+    if want_grill.lower() == "y":
+        print(f"\n{h('  [GRILL]  Stress-test your plan')}")
+        current_branch = None
+        for i, (branch, question) in enumerate(GRILLING_QUESTIONS, 1):
+            if branch != current_branch:
+                current_branch = branch
+                print(f"\n  {BOLD}-- {branch} --{RESET}")
+            print(f"\n  {dim(f'[{i}/{len(GRILLING_QUESTIONS)}]')} {BOLD}{question}{RESET}")
+            you = "You" if lang == "en" else "Bạn"
+            try:
+                answer = input(f"\n  {YELLOW}{you}:{RESET} ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            if answer:
+                grilling_decisions.append({
+                    "branch": branch, "question": question,
+                    "recommendation": "", "answer": answer,
+                })
+                print(f"  {ok('Recorded.' if lang == 'en' else 'Đã ghi nhận.')}")
+            else:
+                print(f"  {dim('Skipped.' if lang == 'en' else 'Bỏ qua.')}")
+        print(f"\n  {ok(f'Grilling complete -- {len(grilling_decisions)}/{len(GRILLING_QUESTIONS)} answered.')}")
+
+    confirm_q = "Proceed with file generation? (y/n)" if lang == "en" else "Tiến hành tạo files? (y/n)"
+    confirm = ask_text(confirm_q, "y")
+    if confirm.lower() != "y":
+        print(dim("Cancelled." if lang == "en" else "Đã hủy."))
+        sys.exit(0)
+
+    return {
+        "name": name, "description": desc, "stack": stack,
+        "run_cmd": run_cmd, "test_cmd": test_cmd, "lint_cmd": lint_cmd,
+        "agents": chosen_agents, "mcps": chosen_mcps, "hooks": chosen_hooks,
+        "skills": chosen_skills, "rules": chosen_rules,
+        "grilling_decisions": grilling_decisions, "lang": lang,
+    }
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+def write_file(path: Path, content: str):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    print(ok(f"Generated: {path}"))
+
+
+def extract_description(template_str: str) -> str:
+    match = re.search(r"^---\n(.*?)\n---", template_str, re.DOTALL)
+    if not match:
+        return ""
+    frontmatter = match.group(1)
+    block = re.search(r"^description:\s*>\s*\n((?:[ \t]+.+\n?)+)", frontmatter, re.MULTILINE)
+    if block:
+        lines = [ln.strip() for ln in block.group(1).strip().splitlines() if ln.strip()]
+        return " ".join(lines)
+    single = re.search(r"^description:\s*(.+)$", frontmatter, re.MULTILINE)
+    return single.group(1).strip() if single else ""
+
+
 def gen_rules_file(key: str) -> str:
     tmpl = RULES_TEMPLATES[key]
     paths_yaml = ""
@@ -799,7 +762,6 @@ def gen_rules_file(key: str) -> str:
     return f"---\n{paths_yaml}---\n\n{tmpl['content']}"
 
 
-# ── Skill template ────────────────────────────────────────────────────────────
 def make_skill(name, description, stack):
     return f"""\
 ---
@@ -833,13 +795,42 @@ Record any gotchas, patterns, or lessons learned here after each use.
 """
 
 
+# ── Spec validation ───────────────────────────────────────────────────────────
+REQUIRED_KEYS = {"name", "description", "stack"}
+
+
+def validate_spec(spec: dict) -> dict:
+    missing = REQUIRED_KEYS - set(spec.keys())
+    if missing:
+        print(warn(f"Spec missing required keys: {', '.join(sorted(missing))}"))
+        sys.exit(1)
+    if not spec["name"].strip():
+        print(warn("Spec key 'name' must not be empty."))
+        sys.exit(1)
+    if not spec["stack"].strip():
+        print(warn("Spec key 'stack' must not be empty."))
+        sys.exit(1)
+    for key in ("agents", "mcps", "hooks", "skills", "rules", "grilling_decisions"):
+        spec.setdefault(key, [])
+    for key in ("run_cmd", "test_cmd", "lint_cmd"):
+        spec.setdefault(key, "")
+    spec.setdefault("lang", "en")
+    for agent in spec["agents"]:
+        if agent not in AGENT_TEMPLATES:
+            print(warn(f"Unknown agent '{agent}' -- skipped. Valid: {', '.join(AGENT_TEMPLATES)}"))
+    for rule in spec["rules"]:
+        if rule not in RULES_TEMPLATES:
+            print(warn(f"Unknown rule '{rule}' -- skipped. Valid: {', '.join(RULES_TEMPLATES)}"))
+    return spec
+
+
 # ── Generators ────────────────────────────────────────────────────────────────
 def gen_claude_md(info):
     agents_list = "\n".join(
         f"- `@agent-{a}` -- {extract_description(AGENT_TEMPLATES[a]).split('.')[0].replace('{name}', info['name'])}"
         for a in info["agents"] if a in AGENT_TEMPLATES
     )
-    mcp_list = "\n".join(f"- {m}" for m in info["mcps"]) if info["mcps"] else "- (none configured)"
+    mcp_list   = "\n".join(f"- {m}" for m in info["mcps"]) if info["mcps"] else "- (none configured)"
     rules_list = "\n".join(
         f"- `.claude/rules/{RULES_TEMPLATES[r]['filename']}` -- {RULES_TEMPLATES[r]['display']}"
         for r in info["rules"] if r in RULES_TEMPLATES
@@ -860,13 +851,13 @@ def gen_claude_md(info):
 
 ```bash
 # Run / start
-{info["run_cmd"] or "# TODO: add run command"}
+{info.get("run_cmd") or "# TODO: add run command"}
 
 # Test
-{info["test_cmd"] or "# TODO: add test command"}
+{info.get("test_cmd") or "# TODO: add test command"}
 
 # Lint
-{info["lint_cmd"] or "# TODO: add lint command"}
+{info.get("lint_cmd") or "# TODO: add lint command"}
 ```
 
 ## Agents
@@ -904,35 +895,22 @@ Rules with `paths:` load only when a matching file enters context.
 
 
 def gen_settings(agents, hooks):
-    """
-    Generate .claude/settings.json.
-    Hooks MUST be registered here -- Claude Code reads hook config from
-    settings.json, not by scanning .claude/hooks/ automatically.
-    """
     perms = {"allow": ["Bash", "Read", "Write", "Edit"], "deny": []}
-
     hooks_config = {}
     if "pre-write" in hooks:
         ext = ".ps1" if IS_WINDOWS else ".sh"
-        cmd = (
-            f"powershell -File .claude/hooks/pre-write{ext}"
-            if IS_WINDOWS else
-            f".claude/hooks/pre-write{ext}"
-        )
+        cmd = (f"powershell -File .claude/hooks/pre-write{ext}" if IS_WINDOWS
+               else f".claude/hooks/pre-write{ext}")
         hooks_config["PreToolUse"] = [
             {"matcher": "Write", "hooks": [{"type": "command", "command": cmd}]}
         ]
     if "post-edit" in hooks:
         ext = ".ps1" if IS_WINDOWS else ".sh"
-        cmd = (
-            f"powershell -File .claude/hooks/post-edit{ext}"
-            if IS_WINDOWS else
-            f".claude/hooks/post-edit{ext}"
-        )
+        cmd = (f"powershell -File .claude/hooks/post-edit{ext}" if IS_WINDOWS
+               else f".claude/hooks/post-edit{ext}")
         hooks_config["PostToolUse"] = [
             {"matcher": "Edit", "hooks": [{"type": "command", "command": cmd}]}
         ]
-
     settings = {
         "permissions": perms,
         "enabledPlugins": [],
@@ -940,7 +918,6 @@ def gen_settings(agents, hooks):
     }
     if hooks_config:
         settings["hooks"] = hooks_config
-
     return json.dumps(settings, indent=2, ensure_ascii=False)
 
 
@@ -950,6 +927,8 @@ def gen_mcp_json(mcps):
         if name in MCP_CATALOG:
             cfg = MCP_CATALOG[name]
             servers[cfg["name"]] = {"type": cfg["type"], "url": cfg["url"]}
+        else:
+            print(warn(f"Unknown MCP '{name}' -- skipped."))
     return json.dumps({"mcpServers": servers}, indent=2, ensure_ascii=False)
 
 
@@ -959,12 +938,8 @@ def gen_hook_bash(hook_type, info):
         return f"""\
 #!/bin/bash
 # Hook: pre-write -- run lint before Claude writes a file
-# Registered in .claude/settings.json under PreToolUse/Write
-# Generated by init-agentic -- {date.today()}
-
 FILE="$1"
 if [ -z "$FILE" ]; then exit 0; fi
-
 case "$FILE" in
   *.py|*.ts|*.js|*.tsx|*.jsx|*.sql)
     echo "[hook] Linting $FILE..."
@@ -972,14 +947,10 @@ case "$FILE" in
     ;;
 esac
 """
-    elif hook_type == "post-edit":
-        test_cmd = info.get("test_cmd") or "echo 'no test configured'"
-        return f"""\
+    test_cmd = info.get("test_cmd") or "echo 'no test configured'"
+    return f"""\
 #!/bin/bash
 # Hook: post-edit -- run quick test after Claude edits a file
-# Registered in .claude/settings.json under PostToolUse/Edit
-# Generated by init-agentic -- {date.today()}
-
 echo "[hook] post-edit triggered. Running quick check..."
 {test_cmd} 2>&1 | tail -5 || true
 """
@@ -990,25 +961,17 @@ def gen_hook_ps1(hook_type, info):
         lint = info.get("lint_cmd") or "Write-Host 'no lint configured'"
         return f"""\
 # Hook: pre-write -- run lint before Claude writes a file
-# Registered in .claude/settings.json under PreToolUse/Write
-# Generated by init-agentic -- {date.today()}
-
 param([string]$File)
 if (-not $File) {{ exit 0 }}
-
 $ext = [System.IO.Path]::GetExtension($File)
 if ($ext -in @('.py','.ts','.js','.tsx','.jsx','.sql')) {{
     Write-Host "[hook] Linting $File..."
     try {{ {lint} $File 2>&1 }} catch {{ }}
 }}
 """
-    elif hook_type == "post-edit":
-        test_cmd = info.get("test_cmd") or "Write-Host 'no test configured'"
-        return f"""\
+    test_cmd = info.get("test_cmd") or "Write-Host 'no test configured'"
+    return f"""\
 # Hook: post-edit -- run quick test after Claude edits a file
-# Registered in .claude/settings.json under PostToolUse/Edit
-# Generated by init-agentic -- {date.today()}
-
 Write-Host "[hook] post-edit triggered. Running quick check..."
 try {{
     {test_cmd} 2>&1 | Select-Object -Last 5
@@ -1017,7 +980,6 @@ try {{
 
 
 def gen_claude_local():
-    """Personal session notes -- gitignored, not committed."""
     return f"""\
 # Session Notes -- Local Only
 
@@ -1045,18 +1007,18 @@ def gen_claude_local():
 
 
 def gen_adr(info, grilling_decisions=None):
-    """ADR-0001 in docs/adr/ -- official pattern for architectural decisions."""
     grilling_section = ""
     if grilling_decisions:
         branches: dict = {}
         for d in grilling_decisions:
-            branches.setdefault(d["branch"], []).append(d)
+            branches.setdefault(d.get("branch", "General"), []).append(d)
         parts = ["\n## Grilling Session Decisions\n"]
         for branch, items in branches.items():
             parts.append(f"\n### {branch}\n")
             for item in items:
                 parts.append(f"**Q:** {item['question']}\n\n")
-                parts.append(f"> Recommended approach: {item['recommendation']}\n\n")
+                if item.get("recommendation"):
+                    parts.append(f"> Recommended: {item['recommendation']}\n\n")
                 parts.append(f"**Decision:** {item['answer']}\n\n---\n")
         grilling_section = "".join(parts)
 
@@ -1134,176 +1096,36 @@ Update status here, not just in CLAUDE.local.md.
 """
 
 
-# ── Main wizard ───────────────────────────────────────────────────────────────
-def run_wizard():
-    lang = select_language()
-    s    = STRINGS[lang]
-
-    print(f"\n{h(SEP)}")
-    print(f"{h(s['title'])}")
-    print(f"{h(SEP)}")
-    print(dim(f"  {s['intro']}\n"))
-
-    cwd          = Path.cwd()
-    default_name = cwd.name
-    none_label   = "none" if lang == "en" else "không có"
-
-    # Step 1: Project basics
-    print(f"\n{h(s['step1'])}")
-    name        = ask(s["project_name"], default_name)
-    description = ask(s["description"], "")
-    if not description:
-        description = f"Project {name}."
-
-    # Step 2: Tech stack
-    print(f"\n{h(s['step2'])}")
-    stack    = ask(s["stack"], "Python")
-    run_cmd  = ask(s["run_cmd"], "")
-    test_cmd = ask(s["test_cmd"], "")
-    lint_cmd = ask(s["lint_cmd"], "")
-
-    # Step 3: Agents — all shown, none pre-selected, user chooses freely
-    print(f"\n{h(s['step3'])}")
-    agent_options = list(AGENT_TEMPLATES.keys())
-    chosen_agents = ask_multi(
-        s["agents_q"],
-        agent_options,
-        defaults=[],
-        hint=s["hint"],
-    )
-
-    # Step 4: MCP servers
-    print(f"\n{h(s['step4'])}")
-    chosen_mcps = ask_multi(
-        s["mcps_q"],
-        list(MCP_CATALOG.keys()),
-        defaults=[],
-        hint=s["hint"],
-    )
-
-    # Step 5: Hooks
-    print(f"\n{h(s['step5'])}")
-    hook_options     = [s["hook_pre"], s["hook_post"]]
-    chosen_hooks_raw = ask_multi(s["hooks_q"], hook_options, defaults=hook_options, hint=s["hint"])
-    chosen_hooks     = []
-    if any("pre-write" in h_ for h_ in chosen_hooks_raw):
-        chosen_hooks.append("pre-write")
-    if any("post-edit" in h_ for h_ in chosen_hooks_raw):
-        chosen_hooks.append("post-edit")
-
-    # Step 6: Skills
-    print(f"\n{h(s['step6'])}")
-    skill_options = [
-        "build-feature (implement a new feature end-to-end)",
-        "deploy (deploy to staging or production)",
-        "debug (systematic debugging workflow)",
-        "refactor (improve code quality without changing behavior)",
-    ]
-    chosen_skills_raw = ask_multi(s["skills_q"], skill_options, defaults=[], hint=s["hint"])
-    chosen_skills     = [sk.split(" ")[0] for sk in chosen_skills_raw]
-
-    # Step 7: Code rules — auto-detect from stack, but no forced defaults
-    print(f"\n{h(s['step7'])}")
-    rule_options = [RULES_TEMPLATES[k]["display"] for k in RULES_TEMPLATES]
-    rule_keys    = list(RULES_TEMPLATES.keys())
-
-    stack_lower        = stack.lower()
-    auto_rule_displays = [RULES_TEMPLATES["general"]["display"]]
-    if "python" in stack_lower:
-        auto_rule_displays.append(RULES_TEMPLATES["python"]["display"])
-    if any(x in stack_lower for x in ["typescript", "javascript", "react", "node", "next", "vue"]):
-        auto_rule_displays.append(RULES_TEMPLATES["typescript"]["display"])
-    if any(x in stack_lower for x in ["sql", "dbt", "bigquery", "postgres", "mysql", "snowflake"]):
-        auto_rule_displays.append(RULES_TEMPLATES["sql"]["display"])
-
-    chosen_rule_displays = ask_multi(s["rules_q"], rule_options, defaults=auto_rule_displays, hint=s["hint"])
-    chosen_rules         = [rule_keys[i] for i, d in enumerate(rule_options) if d in chosen_rule_displays]
-
-    # Summary
-    print(f"\n{h(SEP)}")
-    print(f"{h(s['confirm'])}")
-    print(f"  {s['label_project']:10s}: {BOLD}{name}{RESET}")
-    print(f"  {s['label_stack']:10s}: {stack}")
-    print(f"  {s['label_agents']:10s}: {', '.join(chosen_agents) or none_label}")
-    print(f"  {s['label_mcps']:10s}: {', '.join(chosen_mcps) or none_label}")
-    print(f"  {s['label_hooks']:10s}: {', '.join(chosen_hooks) or none_label}")
-    print(f"  {s['label_skills']:10s}: {', '.join(chosen_skills) or none_label}")
-    print(f"  {s['label_rules']:10s}: {', '.join(chosen_rules) or none_label}")
-    print(f"{h(SEP)}")
-
-    # Grilling
-    want_grill        = ask(s["grill_q"], "y")
-    grilling_decisions = []
-    if want_grill.lower() == "y":
-        grilling_decisions = run_grilling({"name": name, "description": description}, lang=lang)
-
-    # Final confirm
-    print(f"\n{h(SEP)}")
-    confirm = ask(s["proceed_q"], "y")
-    if confirm.lower() != "y":
-        print(dim(s["cancelled"]))
-        sys.exit(0)
-
-    return {
-        "name": name,
-        "description": description,
-        "stack": stack,
-        "run_cmd": run_cmd,
-        "test_cmd": test_cmd,
-        "lint_cmd": lint_cmd,
-        "agents": chosen_agents,
-        "mcps": chosen_mcps,
-        "hooks": chosen_hooks,
-        "skills": chosen_skills,
-        "rules": chosen_rules,
-        "grilling_decisions": grilling_decisions,
-        "lang": lang,
-    }
-
-
 # ── Portfolio Registry ────────────────────────────────────────────────────────
 GLOBAL_CLAUDE_MD = Path.home() / ".claude" / "CLAUDE.md"
-
-PORTFOLIO_PLACEHOLDER = "| (chưa có project nào — thêm khi bootstrap) | | | |"
-PORTFOLIO_HEADER      = "| Project | Status | BA Docs | Repos |"
-PORTFOLIO_SEPARATOR   = re.compile(r"\|\s*-+\s*\|\s*-+\s*\|\s*-+\s*\|\s*-+\s*\|")
+PORTFOLIO_PLACEHOLDERS = [
+    "| (chưa có project nào — thêm khi bootstrap) | | | |",
+    "| (no projects yet — add when bootstrapping) | | | |",
+]
+PORTFOLIO_SEPARATOR = re.compile(r"\|\s*-+\s*\|\s*-+\s*\|\s*-+\s*\|\s*-+\s*\|")
 
 
 def update_portfolio(info: dict, target: Path) -> bool:
-    """
-    Add this project to the Portfolio Registry table in ~/.claude/CLAUDE.md.
-    Returns True if updated, False if the file or section was not found.
-    """
     if not GLOBAL_CLAUDE_MD.exists():
         return False
-
     content = GLOBAL_CLAUDE_MD.read_text(encoding="utf-8")
     if "Portfolio Registry" not in content:
         return False
-
     new_row = f"| {info['name']} | Active | | {target} |"
-
-    # Case 1: placeholder row still present — replace it
-    if PORTFOLIO_PLACEHOLDER in content:
-        content = content.replace(PORTFOLIO_PLACEHOLDER, new_row)
-        GLOBAL_CLAUDE_MD.write_text(content, encoding="utf-8")
-        return True
-
-    # Case 2: table exists with real rows — insert after separator row
-    # Find the Portfolio Registry section first, then the separator within it
+    for placeholder in PORTFOLIO_PLACEHOLDERS:
+        if placeholder in content:
+            content = content.replace(placeholder, new_row)
+            GLOBAL_CLAUDE_MD.write_text(content, encoding="utf-8")
+            return True
     portfolio_start = content.find("## Portfolio Registry")
     if portfolio_start == -1:
         return False
-
     section = content[portfolio_start:]
     sep_match = PORTFOLIO_SEPARATOR.search(section)
     if not sep_match:
         return False
-
-    # Check project not already listed
     if f"| {info['name']} |" in section:
-        return True  # already present, no-op
-
+        return True
     insert_at = portfolio_start + sep_match.end()
     content = content[:insert_at] + "\n" + new_row + content[insert_at:]
     GLOBAL_CLAUDE_MD.write_text(content, encoding="utf-8")
@@ -1311,139 +1133,127 @@ def update_portfolio(info: dict, target: Path) -> bool:
 
 
 # ── File generation ───────────────────────────────────────────────────────────
-def generate_files(info, target: Path):
-    s = STRINGS.get(info.get("lang", "en"))
-    print(f"\n{h(s['generating'])}\n")
-
-    # CLAUDE.md -- project context (committed, shared)
-    write_file(target / "CLAUDE.md", gen_claude_md(info))
-
-    # CLAUDE.local.md -- personal session notes (gitignored)
+def generate_files(info: dict, target: Path):
+    print(f"\n{h('Generating files...')}\n")
+    write_file(target / "CLAUDE.md",       gen_claude_md(info))
     write_file(target / "CLAUDE.local.md", gen_claude_local())
-
-    # .mcp.json -- MCP server config at project root
-    if info["mcps"]:
+    if info.get("mcps"):
         write_file(target / ".mcp.json", gen_mcp_json(info["mcps"]))
-
-    # .claude/settings.json -- permissions + hook registrations
-    write_file(target / ".claude" / "settings.json", gen_settings(info["agents"], info["hooks"]))
-
-    # .claude/registry.md -- agent task registry
+    write_file(target / ".claude" / "settings.json",
+               gen_settings(info.get("agents", []), info.get("hooks", [])))
     write_file(target / ".claude" / "registry.md", gen_registry())
-
-    # .claude/agents/*.md
-    for agent_key in info["agents"]:
-        if agent_key in AGENT_TEMPLATES:
-            content = AGENT_TEMPLATES[agent_key].format(name=info["name"])
-            write_file(target / ".claude" / "agents" / f"{agent_key}.md", content)
-
-    # .claude/rules/*.md -- NEW: file-type coding rules
-    for rule_key in info["rules"]:
-        if rule_key in RULES_TEMPLATES:
-            filename = RULES_TEMPLATES[rule_key]["filename"]
-            write_file(target / ".claude" / "rules" / filename, gen_rules_file(rule_key))
-
-    # .claude/skills/*/SKILL.md
+    for agent_key in info.get("agents", []):
+        if agent_key not in AGENT_TEMPLATES:
+            print(warn(f"Agent '{agent_key}' not found -- skipped."))
+            continue
+        content = AGENT_TEMPLATES[agent_key].format(name=info["name"])
+        write_file(target / ".claude" / "agents" / f"{agent_key}.md", content)
+    for rule_key in info.get("rules", []):
+        if rule_key not in RULES_TEMPLATES:
+            print(warn(f"Rule '{rule_key}' not found -- skipped."))
+            continue
+        write_file(target / ".claude" / "rules" / RULES_TEMPLATES[rule_key]["filename"],
+                   gen_rules_file(rule_key))
     skill_descriptions = {
         "build-feature": "Implement a new feature from scratch, including code and tests.",
-        "deploy": "Deploy the project to a staging or production environment.",
-        "debug": "Analyze errors systematically: reproduce, isolate, fix, verify.",
-        "refactor": "Improve code quality without changing observable behavior.",
+        "deploy":        "Deploy the project to a staging or production environment.",
+        "debug":         "Analyze errors systematically: reproduce, isolate, fix, verify.",
+        "refactor":      "Improve code quality without changing observable behavior.",
     }
-    for skill_name in info["skills"]:
+    for skill_name in info.get("skills", []):
         desc = skill_descriptions.get(skill_name, f"Skill: {skill_name}")
-        write_file(
-            target / ".claude" / "skills" / skill_name / "SKILL.md",
-            make_skill(skill_name, desc, info["stack"]),
-        )
-
-    # .claude/hooks/*.sh or .ps1
-    for hook in info["hooks"]:
+        write_file(target / ".claude" / "skills" / skill_name / "SKILL.md",
+                   make_skill(skill_name, desc, info["stack"]))
+    for hook in info.get("hooks", []):
         if IS_WINDOWS:
-            content  = gen_hook_ps1(hook, info)
-            ext      = ".ps1"
+            content, ext = gen_hook_ps1(hook, info), ".ps1"
         else:
-            content  = gen_hook_bash(hook, info)
-            ext      = ".sh"
+            content, ext = gen_hook_bash(hook, info), ".sh"
         hook_path = target / ".claude" / "hooks" / f"{hook}{ext}"
         write_file(hook_path, content)
         if not IS_WINDOWS:
             os.chmod(hook_path, 0o755)
-
-    # docs/adr/0001-bootstrap.md -- architectural decision record
-    write_file(
-        target / "docs" / "adr" / "0001-bootstrap.md",
-        gen_adr(info, info.get("grilling_decisions", [])),
-    )
-
-    # docs/learnings.md
+    write_file(target / "docs" / "adr" / "0001-bootstrap.md",
+               gen_adr(info, info.get("grilling_decisions", [])))
     write_file(target / "docs" / "learnings.md", gen_learnings())
 
 
-def print_summary(info, target: Path, portfolio_updated: bool = False):
-    s = STRINGS.get(info.get("lang", "en"))
-
+def print_summary(info: dict, target: Path, portfolio_updated: bool = False):
     print(f"\n{h(SEP)}")
-    print(f"{h(s['done'])}")
+    print(f"{h('  [DONE]  Bootstrap complete!')}")
     print(f"{h(SEP)}\n")
-    print(f"  {s['label_project']:10s}: {BOLD}{info['name']}{RESET}")
-    print(f"  {s['label_location']:10s}: {target}\n")
-
-    print(f"  {CYAN}{s['label_output']}{RESET}")
+    print(f"  {'Project':10s}: {BOLD}{info['name']}{RESET}")
+    print(f"  {'Location':10s}: {target}\n")
+    print(f"  {CYAN}Output structure:{RESET}")
     print(f"  {BOLD}CLAUDE.md{RESET}                   <- project context (commit this)")
     print(f"  {BOLD}CLAUDE.local.md{RESET}              <- session notes  (gitignore this)")
     print(f"  {BOLD}.claude/agents/{RESET}              <- sub-agent definitions")
     print(f"  {BOLD}.claude/rules/{RESET}               <- code style rules (auto-loaded)")
     print(f"  {BOLD}.claude/settings.json{RESET}        <- permissions + hook registrations")
     print(f"  {BOLD}docs/adr/0001-bootstrap.md{RESET}   <- architectural decision record")
-    print(f"  {BOLD}docs/learnings.md{RESET}            <- lessons log")
-    print()
-
-    # Portfolio status
+    print(f"  {BOLD}docs/learnings.md{RESET}            <- lessons log\n")
     if portfolio_updated:
-        print(f"  {ok(s['portfolio_ok'])} {dim(str(GLOBAL_CLAUDE_MD))}")
+        print(f"  {ok('Portfolio Registry updated in')} {dim(str(GLOBAL_CLAUDE_MD))}")
     else:
-        print(f"  {warn(s['portfolio_fail'])}")
-        manual_row = f"| {info['name']} | Active | | {target} |"
-        print(f"  {s['portfolio_hint']} {dim(str(GLOBAL_CLAUDE_MD))}:")
-        print(f"  {dim(manual_row)}")
+        print(f"  {warn('Could not auto-update Portfolio Registry.')}")
+        print(f"  {dim(f'| {info[\"name\"]} | Active | | {target} |')}")
     print()
-
-    print(f"  {CYAN}{s['next_steps']}{RESET}")
-    print(f"  1. {s['next1']}")
-    print(f"  2. {s['next2']}")
-    print(f"  3. {s['next3']}")
-    print(f"  4. {s['next4']}")
-    if info["mcps"]:
-        print(f"  5. {s['next5']}")
-    print()
-
     gd = info.get("grilling_decisions", [])
     if gd:
-        label = f"Grilling summary ({len(gd)} decisions)" if info.get("lang") == "en" else f"Grilling ({len(gd)} quyết định)"
-        print(f"  {CYAN}{label}:{RESET}")
+        print(f"  {CYAN}Grilling decisions ({len(gd)}):{RESET}")
         for d in gd[:3]:
-            short_q = d["question"][:65] + "..." if len(d["question"]) > 65 else d["question"]
-            print(f"  {dim('*')} {short_q}")
+            q_text = d.get("question", "")
+            print(f"  {dim('*')} {q_text[:65]}{'...' if len(q_text)>65 else ''}")
         if len(gd) > 3:
             print(f"  {dim(f'  ... +{len(gd)-3} more in docs/adr/0001-bootstrap.md')}")
         print()
-
-    print(dim(f"  {s['agents_invoke']}"))
-    print(dim(f"  {s['agents_auto']}\n"))
+    print(dim("  Invoke agents: @agent-orchestrator, @agent-code-reviewer, etc."))
+    print(dim("  Agents auto-delegate based on their description field.\n"))
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 def main():
-    target = Path.cwd()
-    if len(sys.argv) > 1:
-        target = Path(sys.argv[1]).expanduser().resolve()
-        target.mkdir(parents=True, exist_ok=True)
+    parser = argparse.ArgumentParser(
+        description="Init Agentic — bootstrap a Claude Code project structure.",
+    )
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
+        "--from-spec", metavar="FILE",
+        help="Read JSON spec and generate files. Use '-' for stdin.",
+    )
+    mode.add_argument(
+        "--wizard", action="store_true",
+        help="Run interactive TUI wizard (arrow keys + space to select).",
+    )
+    parser.add_argument(
+        "target", nargs="?", default=".",
+        help="Target directory (default: current directory).",
+    )
+    args = parser.parse_args()
+    target = Path(args.target).expanduser().resolve()
+    target.mkdir(parents=True, exist_ok=True)
 
-    info = run_wizard()
-    generate_files(info, target)
-    portfolio_updated = update_portfolio(info, target)
-    print_summary(info, target, portfolio_updated)
+    if args.wizard:
+        spec = run_wizard_tui()
+    else:
+        try:
+            if args.from_spec == "-":
+                raw = sys.stdin.read()
+            else:
+                spec_path = Path(args.from_spec).expanduser()
+                if not spec_path.exists():
+                    print(warn(f"Spec file not found: {spec_path}"))
+                    sys.exit(1)
+                raw = spec_path.read_text(encoding="utf-8")
+            spec = json.loads(raw)
+        except json.JSONDecodeError as e:
+            print(warn(f"Invalid JSON in spec file: {e}"))
+            sys.exit(1)
+
+    spec = validate_spec(spec)
+    generate_files(spec, target)
+    portfolio_updated = update_portfolio(spec, target)
+    print_summary(spec, target, portfolio_updated)
 
 
 if __name__ == "__main__":
