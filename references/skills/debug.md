@@ -14,25 +14,30 @@ systematic root-cause analysis — not a quick guess-and-check.
 
 ## Steps
 
-1. **Read context** -- check `CLAUDE.md` and `CLAUDE.local.md` for recent changes
-2. **Reproduce** -- confirm the bug is reproducible with a minimal test case
-3. **Isolate** -- narrow the problem to the smallest possible scope (one function, one query)
-4. **Hypothesize** -- state one specific hypothesis before changing any code
-5. **Fix** -- implement the fix; do not fix multiple things at once
-6. **Verify** -- run the full test suite; confirm the original bug is gone
-7. **Check for regressions** -- run any integration tests that touch related code
-8. **Update session notes** -- record root cause and fix in `CLAUDE.local.md`
+1. **Log to registry** — if `.claude/registry.md` exists, add `FIX-NNN | In Progress` before touching any code
+2. **Read context** — check `CLAUDE.md` and `CLAUDE.local.md` for recent changes, known issues, related commits
+3. **Reproduce** — confirm the bug is reproducible with a minimal test case
+   - If not reproducible after 3 attempts: classify as intermittent, add logging to capture it on next occurrence, and document in `CLAUDE.local.md`. Do not guess-fix intermittent bugs.
+4. **Check if it's a regression** — run `git log --oneline -20` to spot recent changes; if the bug is likely a regression, use `git bisect` to find the introducing commit before reading any code
+5. **Isolate** — narrow to the smallest scope: one function, one query, one conditional. Use the "comment out half the code" method if needed
+6. **Hypothesize** — before changing any code, state your hypothesis in this form:
+   > *"The bug is in [specific location] because [reason], which causes [symptom] when [condition]."*
+7. **Fix** — implement one fix at a time; never fix two things in one commit
+8. **Verify** — run tests using `test_cmd` from `CLAUDE.md` (or auto-detect framework); confirm the original symptom is gone
+9. **Check for regressions** — run tests for related code paths
+10. **Update registry** — if `.claude/registry.md` exists, mark `Done`
+11. **Update session notes** — record in `CLAUDE.local.md`: root cause, fix, and any missing tests added
 
 ## Hard rules
-- Do not change more than one thing at a time during diagnosis
+- One change at a time during diagnosis — no combined fixes
 - If the fix is non-obvious, add a comment explaining WHY (not WHAT)
-- If the bug reveals a missing test, add that test
+- If the bug reveals a missing test, add it before closing
 
 ## Definition of Done
-- [ ] Bug is reproducible no more
+- [ ] Bug is no longer reproducible (or intermittent bug has logging to capture it)
 - [ ] All tests pass
 - [ ] Root cause documented in `CLAUDE.local.md`
-- [ ] Regression test added (if applicable)
+- [ ] Regression test added where applicable
 
 ## Notes
-Record patterns — recurring bug types, tricky areas of the codebase.
+Record patterns — recurring bug types, tricky areas, `git bisect` findings.

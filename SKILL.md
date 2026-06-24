@@ -202,11 +202,20 @@ Merge results. If nothing selected in either call, `mcps: []`.
 
 ## STEP 5 — Hooks
 
-Use `AskUserQuestion` tool. Tailor the description based on what the user actually configured:
+Use `AskUserQuestion` tool. Build options dynamically from commands gathered in Step 2:
 
-- If `lint_cmd` is set → `pre-write` description should mention the actual lint command
-- If `test_cmd` is set → `post-edit` description should mention the actual test command
-- If a command is empty → note "(no command set — you can add it later in settings.json)"
+- `pre-write` → mention actual `lint_cmd` if set, or "(no lint command configured)"
+- `post-edit` → mention actual `test_cmd` if set, or "(no test command configured)"
+- `session-end` → always available; appends a session marker to `CLAUDE.local.md` on Stop
+
+Four hooks available. Build descriptions dynamically from commands gathered in Step 2:
+
+| Hook | Event | Always offer? | When to recommend |
+|------|-------|--------------|-------------------|
+| `pre-write` | PreToolUse → Write | Yes | `lint_cmd` is set |
+| `post-edit` | PostToolUse → Edit | Yes | `test_cmd` is set |
+| `session-end` | Stop | Yes | Always — no command needed |
+| `notification` | Notification | Yes | Projects with CI, alerts, or async workflows |
 
 Example (Python + ruff + pytest):
 ```json
@@ -217,42 +226,64 @@ Example (Python + ruff + pytest):
     "multiSelect": true,
     "options": [
       {"label": "pre-write", "description": "Runs `ruff check .` before Claude writes a file (Recommended)"},
-      {"label": "post-edit", "description": "Runs `pytest` after Claude edits a file (Recommended)"}
+      {"label": "post-edit", "description": "Runs `pytest` after Claude edits a file (Recommended)"},
+      {"label": "session-end", "description": "Appends session marker to CLAUDE.local.md when Claude stops (Recommended)"},
+      {"label": "notification", "description": "Logs all Claude Code notifications to .claude/notifications.log"}
     ]
   }]
 }
 ```
-
-Build the actual options dynamically based on the commands from Step 2.
 
 ---
 
 ## STEP 6 — Skills
 
-Use `AskUserQuestion` tool. Infer which skills matter most for this project:
+Skill catalog (6 skills, 4 per AskUserQuestion call max → use **two consecutive calls**):
 
-- New / greenfield project → `build-feature` is almost always useful
-- Has `run_cmd` or CI/CD mentioned → `deploy` relevant
-- Existing codebase / refactor mentioned in description → `refactor`, `debug`
-- Any project → `debug` is universally useful
+| Skill | When most relevant |
+|-------|-------------------|
+| `build-feature` | New / greenfield project |
+| `debug` | Any project — universal |
+| `review` | Any project — pre-merge readiness check |
+| `write-tests` | Existing code with low coverage; data pipelines |
+| `deploy` | Has `run_cmd`, CI/CD, or deployment mentioned |
+| `refactor` | Existing codebase, technical debt mentioned |
 
-Build description dynamically — add context like "useful for your Airflow pipeline" or "(Recommended for new projects)":
+**Before calling:** use heuristics above to decide which 4 go in Call 1 (most relevant first).
 
+**Call 1** — 4 most relevant skills for this project (put recommended ones first with `(Recommended)`):
 ```json
 {
   "questions": [{
-    "question": "Select skills to scaffold:",
-    "header": "Skills",
+    "question": "Select skills to scaffold (1/2):",
+    "header": "Skills 1",
     "multiSelect": true,
     "options": [
       {"label": "build-feature", "description": "<why this matters for THIS project>"},
-      {"label": "deploy", "description": "<why this matters or skip hint>"},
-      {"label": "debug", "description": "<why this matters for THIS stack>"},
+      {"label": "debug",         "description": "<universal — or skip if only non-code work>"},
+      {"label": "review",        "description": "<pre-merge check — recommended for any project with git>"},
+      {"label": "write-tests",   "description": "<why this matters for THIS stack>"}
+    ]
+  }]
+}
+```
+
+**Call 2** — remaining 2 skills:
+```json
+{
+  "questions": [{
+    "question": "Select skills to scaffold (2/2):",
+    "header": "Skills 2",
+    "multiSelect": true,
+    "options": [
+      {"label": "deploy",   "description": "<why this matters or skip hint>"},
       {"label": "refactor", "description": "<why this matters or skip hint>"}
     ]
   }]
 }
 ```
+
+Merge results from both calls into a single `skills` list.
 
 ---
 
@@ -286,18 +317,88 @@ After user responds, ensure `general` is always included even if not selected.
 
 ---
 
+## STEP 7b — Environment, Model & Permissions
+
+Three quick optional configurations. All have "Skip / use default" as the first option.
+
+### Env vars
+
+Analyze `stack` from Step 2. Suggest relevant env var keys (values are placeholders — user fills in later).
+
+Stack → suggested vars:
+- dbt → `DBT_PROFILES_DIR`, `DBT_PROJECT_DIR`
+- BigQuery → `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT`
+- Airflow → `AIRFLOW_HOME`, `AIRFLOW__CORE__DAGS_FOLDER`
+- Python → `PYTHONPATH`
+- Node / Next / React → `NODE_ENV`, `PORT`
+- Snowflake → `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_WAREHOUSE`
+- Postgres → `DATABASE_URL`
+
+Use `AskUserQuestion` (multiSelect: true). Always include "None needed" as an option.
+Store selected keys as `env: { "KEY": "# TODO: set value" }` in the spec.
+
+**Note:** env block is for non-secret config paths. Secrets should go in `.env` (gitignored), not `settings.json`.
+
+### Model override
+
+Use `AskUserQuestion` (multiSelect: false). Default = "Inherit global":
+
+```json
+{
+  "questions": [{
+    "question": "Claude model for this project?",
+    "header": "Model",
+    "multiSelect": false,
+    "options": [
+      {"label": "Inherit global settings", "description": "Use whatever model is set globally (Recommended for most projects)"},
+      {"label": "claude-sonnet-4-6", "description": "Fast and cost-effective — good default for most tasks"},
+      {"label": "claude-opus-4-7", "description": "Most capable — for complex reasoning-heavy projects"},
+      {"label": "claude-haiku-4-5-20251001", "description": "Fastest — for high-volume simple tasks"}
+    ]
+  }]
+}
+```
+
+Store as `model: ""` (empty = inherit) or the selected model ID.
+
+### Permission preset
+
+Use `AskUserQuestion` (multiSelect: false). Default = "standard":
+
+```json
+{
+  "questions": [{
+    "question": "Permission level for Claude in this project?",
+    "header": "Permissions",
+    "multiSelect": false,
+    "options": [
+      {"label": "standard", "description": "Allow Bash, Read, Write, Edit — no extra restrictions (Recommended)"},
+      {"label": "data-safe", "description": "Standard + deny destructive commands: rm -rf, DROP, DELETE, TRUNCATE"},
+      {"label": "strict", "description": "Read and Edit only — no Bash (for review-only or sensitive codebases)"}
+    ]
+  }]
+}
+```
+
+Store as `permission_preset: "standard"` (or selected value).
+
+---
+
 ## STEP 8 — Summary & Confirm
 
 Print a clean summary of all selections. Example:
 
 ```
-Project  : MyProject
-Stack    : Python + dbt
-Agents   : orchestrator, ba-agent, sql-reviewer, data-validator
-MCPs     : none
-Hooks    : pre-write, post-edit
-Skills   : build-feature
-Rules    : general, python, sql
+Project     : MyProject
+Stack       : Python + dbt
+Agents      : orchestrator, ba-agent, sql-reviewer, data-validator
+MCPs        : none
+Hooks       : pre-write, post-edit, session-end
+Skills      : build-feature
+Rules       : general, python, sql
+Env vars    : DBT_PROFILES_DIR, GOOGLE_APPLICATION_CREDENTIALS
+Model       : inherit global
+Permissions : data-safe
 ```
 
 Use `AskUserQuestion` tool to confirm:
@@ -338,16 +439,14 @@ Write the spec to `~/.claude/.init_spec.json` (not inside the target project):
   "lint_cmd": "<from Step 2, or empty string>",
   "agents": ["<selected agent names>"],
   "mcps": ["<selected MCP display names>"],
-  "hooks": ["pre-write", "post-edit"],
+  "hooks": ["pre-write", "post-edit", "session-end"],
   "skills": ["<selected skill names>"],
   "rules": ["<selected rule keys: general|python|typescript|sql>"],
-  "grilling_decisions": [
-    {
-      "branch": "<Goals & Scope|Users|Architecture|Risks|Agentic Design>",
-      "question": "<question text>",
-      "recommendation": "<your synthesized recommendation>",
-      "answer": "<user answer or recommendation text>"
-    }
+  "env": {"KEY": "# TODO: set value"},
+  "model": "<model ID, or empty string to inherit global>",
+  "permission_preset": "<standard|data-safe|strict>",
+  "clarification_rounds": [
+    {"question": "<question text>", "answer": "<user answer>"}
   ],
   "lang": "<en|vi>"
 }
@@ -401,20 +500,30 @@ Files to generate (write only selected items):
 |-------------|-----------------|-------|
 | `CLAUDE.md` | Compose from answers | Use gen_claude_md() structure |
 | `CLAUDE.local.md` | `references/docs/claude-local.md` | Replace `<DATE>` |
+| `.gitignore` | Create or append | Always add `CLAUDE.local.md` entry |
 | `.mcp.json` | Compose from MCP catalog | Only if MCPs selected |
 | `.claude/settings.json` | Compose from agents + hooks | See hook registration below |
 | `.claude/registry.md` | `references/docs/registry.md` | Replace `<DATE>` |
 | `.claude/agents/<name>.md` | `references/agents/<name>.md` | Replace `<PROJECT_NAME>` |
 | `.claude/rules/<filename>` | `references/rules/<name>.md` | No substitution needed |
 | `.claude/skills/<name>/SKILL.md` | `references/skills/<name>.md` | Replace `<STACK>` |
+| `.claude/commands/standup.md` | `references/commands/standup.md` | Always generated |
+| `.claude/commands/review.md` | `references/commands/review.md` | Always generated |
+| `.claude/commands/run-tests.md` | `references/commands/run-tests.md` | Only if qa-tester selected |
+| `.claude/commands/validate.md` | `references/commands/validate.md` | Only if data-validator selected |
+| `.claude/commands/sync-docs.md` | `references/commands/sync-docs.md` | Only if documentation selected |
 | `.claude/hooks/pre-write.ps1\|.sh` | Compose | Only if pre-write selected |
 | `.claude/hooks/post-edit.ps1\|.sh` | Compose | Only if post-edit selected |
+| `.claude/hooks/session-end.ps1\|.sh` | Compose | Only if session-end selected |
+| `.claude/hooks/notification.ps1\|.sh` | Compose | Only if notification selected |
 | `docs/adr/0001-bootstrap.md` | `references/docs/adr-0001.md` | Replace all placeholders |
 | `docs/learnings.md` | `references/docs/learnings.md` | Replace `<DATE>` |
 
 **Hooks MUST be registered in `.claude/settings.json`** under the `hooks` key:
 - `pre-write` → event `PreToolUse`, matcher `Write`
 - `post-edit` → event `PostToolUse`, matcher `Edit`
+- `session-end` → event `Stop` (no matcher)
+- `notification` → event `Notification` (no matcher)
 - Windows command: `powershell -File .claude/hooks/<name>.ps1`
 - Unix command: `.claude/hooks/<name>.sh`
 

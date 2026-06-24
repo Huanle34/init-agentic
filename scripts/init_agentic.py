@@ -40,6 +40,12 @@ _setup_encoding()
 
 IS_WINDOWS = platform.system() == "Windows"
 
+# ── Reference file paths ──────────────────────────────────────────────────────
+SKILL_BASE_DIR  = Path(__file__).resolve().parent.parent
+AGENTS_REF_DIR  = SKILL_BASE_DIR / "references" / "agents"
+SKILLS_REF_DIR  = SKILL_BASE_DIR / "references" / "skills"
+COMMANDS_REF_DIR = SKILL_BASE_DIR / "references" / "commands"
+
 
 def _supports_ansi() -> bool:
     if not sys.stdout.isatty():
@@ -90,300 +96,63 @@ MCP_CATALOG = {
     "Figma":                      {"type": "url", "url": "https://mcp.figma.com/mcp",              "name": "figma"},
 }
 
-# ── Agent templates ───────────────────────────────────────────────────────────
-AGENT_TEMPLATES = {
-    "orchestrator": """\
----
-name: orchestrator
-description: >
-  High-level task planner for {name}.
-  Auto-invoked when the request spans multiple steps or agents
-  (e.g. "build feature X end-to-end", "plan the auth flow", "coordinate a refactor").
-  NOT for: single-step edits, quick questions, running tests directly.
-model: @MODEL_OPUS@
-effort: high
-maxTurns: 30
----
+# ── Agent templates — loaded from references/agents/*.md ─────────────────────
+def _load_agent_templates() -> dict:
+    """Scan references/agents/*.md and return {stem: file_content}."""
+    templates = {}
+    if AGENTS_REF_DIR.exists():
+        for f in sorted(AGENTS_REF_DIR.glob("*.md")):
+            templates[f.stem] = f.read_text(encoding="utf-8")
+    if not templates:
+        print(warn(f"No agent templates found in {AGENTS_REF_DIR}"))
+    return templates
 
-You are the Orchestrator for project **{name}**.
+AGENT_TEMPLATES = _load_agent_templates()
 
-## Role
-Receive high-level requests, break them into subtasks, and delegate:
-- Code generation -> review with @agent-code-reviewer after writing
-- Testing -> @agent-qa-tester
-- Documentation -> @agent-documentation or write to docs/
-
-## Process
-1. Read `CLAUDE.md` to understand project context and commands
-2. Read `CLAUDE.local.md` (if it exists) to know current session state
-3. Break the request into clear, ordered subtasks
-4. Execute or delegate in priority order
-5. Append a brief summary to `CLAUDE.local.md` when done
-
-## Principles
-- Plan before coding -- write the plan as a checklist first
-- Do not self-approve changes to production, data deletion, or external communications
-- Record significant architectural decisions in `docs/adr/`
-""",
-
-    "code-reviewer": """\
----
-name: code-reviewer
-description: >
-  Read-only code quality reviewer for {name}.
-  Auto-invoked after code is written and before committing.
-  Checks logic correctness, security, naming, test coverage, and performance.
-  NOT for: writing new code, fixing bugs, running tests, deployment.
-model: @MODEL_SONNET@
-effort: medium
-maxTurns: 15
-disallowedTools:
-  - Write
-  - Edit
-  - Bash
----
-
-You are the Code Reviewer for project **{name}**.
-
-## Review checklist
-- [ ] Logic is correct with no missed edge cases
-- [ ] Naming is clear and consistent with the codebase
-- [ ] No hardcoded secrets or credentials
-- [ ] Error handling is complete
-- [ ] Tests cover happy path and key edge cases
-- [ ] No N+1 queries or unnecessary loops
-- [ ] Input validation present at system boundaries
-
-## Output format
-```
-## Code Review -- [file / feature]
-
-### CRITICAL (must fix before merge)
-- ...
-
-### WARNING (should fix)
-- ...
-
-### SUGGESTION (nice-to-have)
-- ...
-
-### GOOD
-- ...
-```
-""",
-
-    "qa-tester": """\
----
-name: qa-tester
-description: >
-  Test runner and QA reporter for {name}.
-  Auto-invoked to verify a feature works or after a bug fix.
-  Runs the test suite, analyzes failures, writes a pass/fail report.
-  NOT for: writing application code, reviewing code, deployment.
-model: @MODEL_SONNET@
-effort: medium
-maxTurns: 20
----
-
-You are the QA Tester for project **{name}**.
-
-## Test process
-1. Read `CLAUDE.md` for the test command
-2. Run the test suite and capture output
-3. Analyze failures -- identify root cause, not just symptom
-4. Append findings to `CLAUDE.local.md`
-
-## Report format
-```
-## QA Report -- [date]
-
-### Results
-- Passed: X / Y
-- Failed: Z
-
-### Failures
-- [test name]: [root cause] -> [suggested fix]
-
-### Verdict
-- [ ] Ready to merge
-- [ ] Needs fixes first
-```
-""",
-
-    "documentation": """\
----
-name: documentation
-description: >
-  Documentation writer for {name}.
-  Auto-invoked when a new feature is added or the API changes.
-  Updates README, docs/, CHANGELOG. Does not modify application source code.
-  NOT for: writing application code, running tests, deployment.
-model: @MODEL_SONNET@
-effort: low
-maxTurns: 10
-disallowedTools:
-  - Bash
----
-
-You are the Documentation Writer for project **{name}**.
-
-## Principles
-- Write for newcomers -- do not assume prior knowledge of the codebase
-- Include a working code example for every API function or endpoint
-- Update CHANGELOG when there are breaking changes
-- Keep README.md accurate and under 150 lines
-
-## Files to maintain
-- `README.md` -- Quick start, installation, basic usage
-- `docs/` -- Detailed documentation and guides
-- `CHANGELOG.md` -- Version history
-- Inline docstrings / JSDoc in source code
-""",
-
-    "ba-agent": """\
----
-name: ba-agent
-description: >
-  Business Analyst for {name}.
-  Auto-invoked when the request involves requirements analysis, writing specs,
-  defining business rules, data flow diagrams, or sign-off decisions.
-  NOT for: implementation, writing code, running queries, deployment.
-model: @MODEL_OPUS@
-effort: high
-maxTurns: 20
-disallowedTools:
-  - Bash
-  - Edit
----
-
-You are the Business Analyst for project **{name}**.
-
-## Role
-Translate business needs into clear, unambiguous specifications that engineers
-can implement without guessing. You define WHAT and WHY -- never HOW.
-
-## Deliverables
-- **Requirement specs** -- written to `workspace/ba/` in markdown
-- **Data flow diagrams** -- DrawIO XML format
-- **Business rules** -- explicit conditions, edge cases, exclusions
-- **Sign-off checklist** -- what must be true before implementation starts
-
-## Process
-1. Ask clarifying questions until the requirement is unambiguous
-2. Document the spec with: context, rules, edge cases, out-of-scope
-3. List assumptions explicitly -- flag anything that needs confirmation
-4. Do NOT approve implementation until spec is complete
-
-## Principles
-- If a rule has exceptions, write the exceptions explicitly
-- "It depends" is not an answer -- resolve the dependency or flag it
-- Every data field needs: source, transformation logic, expected values
-- Out-of-scope is as important as in-scope
-""",
-
-    "sql-reviewer": """\
----
-name: sql-reviewer
-description: >
-  Read-only SQL and dbt model reviewer for {name}.
-  Auto-invoked after writing a dbt model or BigQuery SQL query, before committing.
-  Checks SQL correctness, BigQuery dialect, CTE structure, performance, and naming.
-  NOT for: writing SQL, running queries, deployment.
-model: @MODEL_SONNET@
-effort: medium
-maxTurns: 15
-disallowedTools:
-  - Write
-  - Edit
-  - Bash
----
-
-You are the SQL Reviewer for project **{name}**.
-
-## Review checklist
-- [ ] SQL is valid BigQuery dialect (not ANSI or Postgres-specific syntax)
-- [ ] No `SELECT *` in production models -- all columns listed explicitly
-- [ ] CTEs are named clearly and each has a one-line comment explaining purpose
-- [ ] All column references qualified with table alias in multi-table queries
-- [ ] No implicit type casting -- all casts are explicit
-- [ ] Window functions use correct PARTITION BY and ORDER BY
-- [ ] Incremental models have correct `is_incremental()` filter
-- [ ] No hardcoded dates -- use `current_date` or dbt variables
-- [ ] Naming: snake_case, no reserved words as identifiers
-
-## Output format
-```
-## SQL Review -- [model / file]
-
-### CRITICAL (logic error or will fail in production)
-- ...
-
-### WARNING (performance or maintainability issue)
-- ...
-
-### SUGGESTION (style / readability)
-- ...
-
-### GOOD
-- ...
-```
-""",
-
-    "data-validator": """\
----
-name: data-validator
-description: >
-  Data quality validator for {name}.
-  Auto-invoked after a dbt run or pipeline execution to verify output data.
-  Checks row counts, nulls, schema drift, referential integrity, business rules.
-  NOT for: writing code, reviewing SQL, deployment decisions.
-model: @MODEL_SONNET@
-effort: medium
-maxTurns: 20
----
-
-You are the Data Validator for project **{name}**.
-
-## Validation checklist
-- [ ] Row count is within expected range (compare to previous run)
-- [ ] No unexpected nulls in NOT NULL columns
-- [ ] No duplicate primary keys
-- [ ] Referential integrity: all foreign keys exist in parent table
-- [ ] Date ranges are sensible (no future dates in historical fields)
-- [ ] Numeric values within business-defined bounds (no negative amounts where invalid)
-- [ ] Schema matches expected columns and data types
-- [ ] dbt tests all pass (unique, not_null, accepted_values, relationships)
-
-## Process
-1. Run `dbt test` and capture output
-2. Check row counts against previous run or expected baseline
-3. Sample suspicious values for manual inspection
-4. Report findings with the affected model, column, and sample bad rows
-
-## Report format
-```
-## Data Validation Report -- [date] -- [model / pipeline]
-
-### FAIL (blocks promotion to production)
-- [model.column]: [issue] -- sample: [bad values]
-
-### WARN (investigate before next run)
-- [model.column]: [issue]
-
-### PASS
-- [N] checks passed
-
-### Verdict
-- [ ] Safe to promote
-- [ ] Needs investigation
-```
-""",
+# ── Permission presets ────────────────────────────────────────────────────────
+PERMISSION_PRESETS = {
+    "standard": {
+        "allow": ["Bash", "Read", "Write", "Edit"],
+    },
+    "data-safe": {
+        "allow": ["Bash", "Read", "Write", "Edit"],
+        "deny": [
+            "Bash(rm -rf *)",
+            "Bash(DROP *)",
+            "Bash(DELETE FROM *)",
+            "Bash(TRUNCATE *)",
+        ],
+    },
+    "strict": {
+        "allow": ["Read", "Edit"],
+    },
 }
 
-for _k in AGENT_TEMPLATES:
-    AGENT_TEMPLATES[_k] = (AGENT_TEMPLATES[_k]
-                           .replace("@MODEL_OPUS@", MODEL_OPUS)
-                           .replace("@MODEL_SONNET@", MODEL_SONNET))
+# ── Common env var suggestions by stack keyword ───────────────────────────────
+ENV_VAR_SUGGESTIONS = {
+    "dbt":        ["DBT_PROFILES_DIR", "DBT_PROJECT_DIR"],
+    "bigquery":   ["GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT"],
+    "airflow":    ["AIRFLOW_HOME", "AIRFLOW__CORE__DAGS_FOLDER"],
+    "python":     ["PYTHONPATH"],
+    "node":       ["NODE_ENV", "PORT"],
+    "next":       ["NODE_ENV", "PORT"],
+    "react":      ["NODE_ENV", "PORT"],
+    "docker":     ["COMPOSE_FILE", "DOCKER_BUILDKIT"],
+    "postgres":   ["DATABASE_URL", "PGHOST"],
+    "snowflake":  ["SNOWFLAKE_ACCOUNT", "SNOWFLAKE_WAREHOUSE"],
+}
+
+def suggest_env_vars(stack: str) -> list:
+    """Return a deduplicated list of env var names relevant to the given stack string."""
+    sl = stack.lower()
+    seen, result = set(), []
+    for keyword, vars_ in ENV_VAR_SUGGESTIONS.items():
+        if keyword in sl:
+            for v in vars_:
+                if v not in seen:
+                    seen.add(v)
+                    result.append(v)
+    return result
 
 # ── Rules templates ───────────────────────────────────────────────────────────
 RULES_TEMPLATES = {
@@ -812,9 +581,11 @@ def validate_spec(spec: dict) -> dict:
         sys.exit(1)
     for key in ("agents", "mcps", "hooks", "skills", "rules", "grilling_decisions"):
         spec.setdefault(key, [])
-    for key in ("run_cmd", "test_cmd", "lint_cmd"):
+    for key in ("run_cmd", "test_cmd", "lint_cmd", "model"):
         spec.setdefault(key, "")
     spec.setdefault("lang", "en")
+    spec.setdefault("env", {})
+    spec.setdefault("permission_preset", "standard")
     for agent in spec["agents"]:
         if agent not in AGENT_TEMPLATES:
             print(warn(f"Unknown agent '{agent}' -- skipped. Valid: {', '.join(AGENT_TEMPLATES)}"))
@@ -827,7 +598,7 @@ def validate_spec(spec: dict) -> dict:
 # ── Generators ────────────────────────────────────────────────────────────────
 def gen_claude_md(info):
     agents_list = "\n".join(
-        f"- `@agent-{a}` -- {extract_description(AGENT_TEMPLATES[a]).split('.')[0].replace('{name}', info['name'])}"
+        f"- `@agent-{a}` -- {extract_description(AGENT_TEMPLATES[a]).split('.')[0].replace('<PROJECT_NAME>', info['name'])}"
         for a in info["agents"] if a in AGENT_TEMPLATES
     )
     mcp_list   = "\n".join(f"- {m}" for m in info["mcps"]) if info["mcps"] else "- (none configured)"
@@ -894,28 +665,44 @@ Rules with `paths:` load only when a matching file enters context.
 """
 
 
-def gen_settings(agents, hooks):
-    perms = {"allow": ["Bash", "Read", "Write", "Edit"], "deny": []}
+def _hook_cmd(name: str) -> str:
+    ext = ".ps1" if IS_WINDOWS else ".sh"
+    if IS_WINDOWS:
+        return f"powershell -File .claude/hooks/{name}{ext}"
+    return f".claude/hooks/{name}{ext}"
+
+
+def gen_settings(agents, hooks, env=None, model=None, permission_preset="standard"):
+    preset = PERMISSION_PRESETS.get(permission_preset, PERMISSION_PRESETS["standard"])
+    perms = {"allow": preset["allow"]}
+    if preset.get("deny"):
+        perms["deny"] = preset["deny"]
+
     hooks_config = {}
     if "pre-write" in hooks:
-        ext = ".ps1" if IS_WINDOWS else ".sh"
-        cmd = (f"powershell -File .claude/hooks/pre-write{ext}" if IS_WINDOWS
-               else f".claude/hooks/pre-write{ext}")
         hooks_config["PreToolUse"] = [
-            {"matcher": "Write", "hooks": [{"type": "command", "command": cmd}]}
+            {"matcher": "Write", "hooks": [{"type": "command", "command": _hook_cmd("pre-write")}]}
         ]
     if "post-edit" in hooks:
-        ext = ".ps1" if IS_WINDOWS else ".sh"
-        cmd = (f"powershell -File .claude/hooks/post-edit{ext}" if IS_WINDOWS
-               else f".claude/hooks/post-edit{ext}")
         hooks_config["PostToolUse"] = [
-            {"matcher": "Edit", "hooks": [{"type": "command", "command": cmd}]}
+            {"matcher": "Edit", "hooks": [{"type": "command", "command": _hook_cmd("post-edit")}]}
         ]
-    settings = {
-        "permissions": perms,
-        "enabledPlugins": [],
-        "agentSettings": {a: {"enabled": True} for a in agents},
-    }
+    if "session-end" in hooks:
+        hooks_config["Stop"] = [
+            {"hooks": [{"type": "command", "command": _hook_cmd("session-end")}]}
+        ]
+    if "notification" in hooks:
+        hooks_config["Notification"] = [
+            {"hooks": [{"type": "command", "command": _hook_cmd("notification")}]}
+        ]
+
+    settings = {"permissions": perms}
+    if model:
+        settings["model"] = model
+    if env:
+        settings["env"] = env
+    if agents:
+        settings["agentSettings"] = {a: {"enabled": True} for a in agents}
     if hooks_config:
         settings["hooks"] = hooks_config
     return json.dumps(settings, indent=2, ensure_ascii=False)
@@ -947,6 +734,26 @@ case "$FILE" in
     ;;
 esac
 """
+    if hook_type == "session-end":
+        return """\
+#!/bin/bash
+# Hook: session-end -- append session marker to CLAUDE.local.md on Stop
+FILE="CLAUDE.local.md"
+DATE=$(date +%Y-%m-%d\\ %H:%M)
+if [ -f "$FILE" ]; then
+    printf "\\n## Session ended: %s\\n- (fill in what was done)\\n" "$DATE" >> "$FILE"
+fi
+"""
+    if hook_type == "notification":
+        return """\
+#!/bin/bash
+# Hook: notification -- log Claude Code notifications to .claude/notifications.log
+LOG=".claude/notifications.log"
+DATE=$(date +"%Y-%m-%d %H:%M:%S")
+MSG=$(cat 2>/dev/null || echo "")
+mkdir -p "$(dirname "$LOG")"
+echo "[$DATE] $MSG" >> "$LOG" 2>/dev/null || true
+"""
     test_cmd = info.get("test_cmd") or "echo 'no test configured'"
     return f"""\
 #!/bin/bash
@@ -968,6 +775,26 @@ if ($ext -in @('.py','.ts','.js','.tsx','.jsx','.sql')) {{
     Write-Host "[hook] Linting $File..."
     try {{ {lint} $File 2>&1 }} catch {{ }}
 }}
+"""
+    if hook_type == "session-end":
+        return """\
+# Hook: session-end -- append session marker to CLAUDE.local.md on Stop
+$File = "CLAUDE.local.md"
+$Date = Get-Date -Format "yyyy-MM-dd HH:mm"
+if (Test-Path $File) {
+    Add-Content -Path $File -Value ""
+    Add-Content -Path $File -Value "## Session ended: $Date"
+    Add-Content -Path $File -Value "- (fill in what was done)"
+}
+"""
+    if hook_type == "notification":
+        return """\
+# Hook: notification -- log Claude Code notifications to .claude/notifications.log
+$Log = ".claude/notifications.log"
+$Date = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+$Msg = $input | Out-String
+$null = New-Item -ItemType Directory -Force -Path (Split-Path $Log)
+Add-Content -Path $Log -Value "[$Date] $Msg" -ErrorAction SilentlyContinue
 """
     test_cmd = info.get("test_cmd") or "Write-Host 'no test configured'"
     return f"""\
@@ -1096,6 +923,19 @@ Update status here, not just in CLAUDE.local.md.
 """
 
 
+# ── .gitignore helper ────────────────────────────────────────────────────────
+def update_gitignore(target: Path, entries: list):
+    gitignore = target / ".gitignore"
+    content = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+    added = [e for e in entries if e not in content.splitlines()]
+    if added:
+        sep = "\n" if content and not content.endswith("\n") else ""
+        gitignore.write_text(content + sep + "\n".join(added) + "\n", encoding="utf-8")
+        print(ok(f"{'Updated' if content else 'Created'} .gitignore: {', '.join(added)}"))
+    else:
+        print(dim(".gitignore already up to date."))
+
+
 # ── Portfolio Registry ────────────────────────────────────────────────────────
 GLOBAL_CLAUDE_MD = Path.home() / ".claude" / "CLAUDE.md"
 PORTFOLIO_PLACEHOLDERS = [
@@ -1140,13 +980,19 @@ def generate_files(info: dict, target: Path):
     if info.get("mcps"):
         write_file(target / ".mcp.json", gen_mcp_json(info["mcps"]))
     write_file(target / ".claude" / "settings.json",
-               gen_settings(info.get("agents", []), info.get("hooks", [])))
+               gen_settings(
+                   info.get("agents", []),
+                   info.get("hooks", []),
+                   env=info.get("env") or None,
+                   model=info.get("model") or None,
+                   permission_preset=info.get("permission_preset", "standard"),
+               ))
     write_file(target / ".claude" / "registry.md", gen_registry())
     for agent_key in info.get("agents", []):
         if agent_key not in AGENT_TEMPLATES:
-            print(warn(f"Agent '{agent_key}' not found -- skipped."))
+            print(warn(f"Agent '{agent_key}' not found in {AGENTS_REF_DIR} -- skipped."))
             continue
-        content = AGENT_TEMPLATES[agent_key].format(name=info["name"])
+        content = AGENT_TEMPLATES[agent_key].replace("<PROJECT_NAME>", info["name"])
         write_file(target / ".claude" / "agents" / f"{agent_key}.md", content)
     for rule_key in info.get("rules", []):
         if rule_key not in RULES_TEMPLATES:
@@ -1154,16 +1000,13 @@ def generate_files(info: dict, target: Path):
             continue
         write_file(target / ".claude" / "rules" / RULES_TEMPLATES[rule_key]["filename"],
                    gen_rules_file(rule_key))
-    skill_descriptions = {
-        "build-feature": "Implement a new feature from scratch, including code and tests.",
-        "deploy":        "Deploy the project to a staging or production environment.",
-        "debug":         "Analyze errors systematically: reproduce, isolate, fix, verify.",
-        "refactor":      "Improve code quality without changing observable behavior.",
-    }
     for skill_name in info.get("skills", []):
-        desc = skill_descriptions.get(skill_name, f"Skill: {skill_name}")
-        write_file(target / ".claude" / "skills" / skill_name / "SKILL.md",
-                   make_skill(skill_name, desc, info["stack"]))
+        skill_ref = SKILLS_REF_DIR / f"{skill_name}.md"
+        if skill_ref.exists():
+            content = skill_ref.read_text(encoding="utf-8").replace("<STACK>", info["stack"])
+        else:
+            content = make_skill(skill_name, f"Skill: {skill_name}", info["stack"])
+        write_file(target / ".claude" / "skills" / skill_name / "SKILL.md", content)
     for hook in info.get("hooks", []):
         if IS_WINDOWS:
             content, ext = gen_hook_ps1(hook, info), ".ps1"
@@ -1173,9 +1016,20 @@ def generate_files(info: dict, target: Path):
         write_file(hook_path, content)
         if not IS_WINDOWS:
             os.chmod(hook_path, 0o755)
+    # Commands — universal + agent-conditional
+    commands_to_gen = {"standup", "review"}
+    if "qa-tester"       in info.get("agents", []): commands_to_gen.add("run-tests")
+    if "data-validator"  in info.get("agents", []): commands_to_gen.add("validate")
+    if "documentation"   in info.get("agents", []): commands_to_gen.add("sync-docs")
+    for cmd_name in sorted(commands_to_gen):
+        cmd_ref = COMMANDS_REF_DIR / f"{cmd_name}.md"
+        if cmd_ref.exists():
+            write_file(target / ".claude" / "commands" / f"{cmd_name}.md",
+                       cmd_ref.read_text(encoding="utf-8"))
     write_file(target / "docs" / "adr" / "0001-bootstrap.md",
                gen_adr(info, info.get("grilling_decisions", [])))
     write_file(target / "docs" / "learnings.md", gen_learnings())
+    update_gitignore(target, ["CLAUDE.local.md"])
 
 
 def print_summary(info: dict, target: Path, portfolio_updated: bool = False):
@@ -1186,9 +1040,11 @@ def print_summary(info: dict, target: Path, portfolio_updated: bool = False):
     print(f"  {'Location':10s}: {target}\n")
     print(f"  {CYAN}Output structure:{RESET}")
     print(f"  {BOLD}CLAUDE.md{RESET}                   <- project context (commit this)")
-    print(f"  {BOLD}CLAUDE.local.md{RESET}              <- session notes  (gitignore this)")
+    print(f"  {BOLD}CLAUDE.local.md{RESET}              <- session notes  (gitignored)")
+    print(f"  {BOLD}.gitignore{RESET}                   <- CLAUDE.local.md excluded")
     print(f"  {BOLD}.claude/agents/{RESET}              <- sub-agent definitions")
     print(f"  {BOLD}.claude/rules/{RESET}               <- code style rules (auto-loaded)")
+    print(f"  {BOLD}.claude/commands/{RESET}            <- project slash commands")
     print(f"  {BOLD}.claude/settings.json{RESET}        <- permissions + hook registrations")
     print(f"  {BOLD}docs/adr/0001-bootstrap.md{RESET}   <- architectural decision record")
     print(f"  {BOLD}docs/learnings.md{RESET}            <- lessons log\n")
@@ -1196,7 +1052,8 @@ def print_summary(info: dict, target: Path, portfolio_updated: bool = False):
         print(f"  {ok('Portfolio Registry updated in')} {dim(str(GLOBAL_CLAUDE_MD))}")
     else:
         print(f"  {warn('Could not auto-update Portfolio Registry.')}")
-        print(f"  {dim(f'| {info[\"name\"]} | Active | | {target} |')}")
+        _row = f"| {info['name']} | Active | | {target} |"
+        print(f"  {dim(_row)}")
     print()
     gd = info.get("grilling_decisions", [])
     if gd:
