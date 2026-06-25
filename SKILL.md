@@ -82,146 +82,196 @@ Do NOT ask follow-up questions yet. Proceed immediately to STEP 2 with what you 
 
 ---
 
-## STEP 2 — Requirement Grilling (no round limit)
+## STEP 2 — BA Requirements Discovery
 
-**Foundation:** This step uses the `grill-me` approach — interview the user relentlessly,
-walking down each branch of the decision tree, resolving dependencies between decisions
-one at a time. Ask ONE question per turn. Provide your recommended answer as the first option.
-**No artificial round limit. Continue until all open branches are resolved.**
+This step delegates to the `grill-me` skill for relentless one-at-a-time questioning.
+Your job here is to: (1) frame the session, (2) invoke grill-me, (3) extract the answers.
 
-### Stop condition
+### 2a — Frame and announce
 
-Stop only when ALL of the following are known:
-- What the system does and for whom
-- The primary stack / language / framework
-- The core problem being solved
-- At least 1 key risk or constraint
-- Rough scope boundary (what is NOT in v1)
-- Commands: run, test, lint (or confirmed "none yet")
-- No unresolved dependency remains that would affect agent/tool selection
+Tell the user what's about to happen:
+> EN: "I'll now grill you on this project to get requirements clear — BA style. I'll start with WHY and work toward HOW. Answer as roughly as you want."
+> VI: "Tôi sẽ hỏi sâu để làm rõ yêu cầu — theo kiểu BA. Bắt đầu từ TẠI SAO rồi đến NHƯ THẾ NÀO. Trả lời tự nhiên thôi."
 
-If even one branch is unresolved and it affects agent/hook/rule recommendations — keep grilling.
+### 2b — Invoke grill-me
 
-### Per-turn process
+Call `Skill("grill-me")` and follow its instructions.
 
-1. Build a decision tree from everything known so far
-2. Find the highest-priority unresolved branch
-3. Synthesize 2–3 options tailored to THIS project — put your recommended answer first,
-   label it `(Recommended)` in the description
-4. Call `AskUserQuestion` (multiSelect: false, one question) — "Other" auto-appears for free text
-5. Record the answer; update the decision tree
-6. Check stop condition — if not met, go to next branch
+While running the grill-me session, apply BA ordering to your questions — work through
+these tiers in sequence (skip any already answered from STEP 1):
 
-Example turn for a vague data pipeline project:
+| Tier | Questions to resolve |
+|------|---------------------|
+| 1 — Why & Who | Business problem, urgency, sponsor, primary user |
+| 2 — Value & Scope | Success metric, current workaround, v1 deliverable, explicit out-of-scope |
+| 3 — Risk & Constraints | Key assumption, production risk, external dependencies, deadline |
+| 4 — Technical | Stack, data sources, run/test/lint commands |
+
+Do NOT jump to Tier 4 before Tiers 1–3 are resolved.
+Use `AskUserQuestion` for each question (multiSelect: false) — synthesize 2–3 project-specific
+options with your recommended answer first, labeled `(Recommended)`.
+
+### 2c — Stop condition
+
+Stop the grill-me session when ALL of the following are known:
+- Why this project exists and why now
+- Who uses it and who sponsors/owns it
+- Measurable success criteria for v1
+- What is explicitly OUT of scope for v1
+- At least 1 critical risk or unvalidated assumption
+- Stack / language / framework (inferred or confirmed)
+- Run, test, lint commands (or "none yet" confirmed)
+
+If any item above is still unknown and would affect agent/rule/hook recommendations — keep grilling.
+
+### 2d — Extract and summarise
+
+When stop condition is met, end the grill-me session and print a BA spec summary:
+
+```
+Problem    : <why this exists>
+Sponsor    : <who owns it>
+Users      : <who uses it daily>
+Success    : <measurable v1 outcome>
+In scope   : <core v1 deliverable>
+Out of v1  : <explicit exclusions>
+Key risk   : <what could break this>
+Stack      : <language + framework>
+Commands   : run=<cmd> | test=<cmd> | lint=<cmd>
+```
+
+Then say:
+> EN: "Requirements clear — moving on to design agents and tools."
+> VI: "Đã rõ yêu cầu — tiếp tục thiết kế agents và tools."
+
+Proceed directly to STEP 3. Do NOT ask "is this correct?"
+
+---
+
+## STEP 3 — Agent Design
+
+Do NOT copy from a fixed catalog. Design agents from this project's domain and workflow.
+
+### 3a — Propose roles
+
+From the BA spec, identify roles the project genuinely needs. Ask per role:
+- What recurring task does this agent own end-to-end?
+- What does it explicitly NOT do? (routing clarity)
+- Does this need a separate agent, or can another handle it?
+
+Max 5 agents. Fewer focused agents beat many overlapping ones.
+
+Name agents after their role in THIS project — not generic names.
+Example: `pipeline-orchestrator` not `orchestrator`; `sql-reviewer` not `reviewer`.
+
+Use AskUserQuestion (multiSelect: true, max 4 options per call — use 2 calls if >4 proposals):
+- Label = project-specific role name
+- Description = one sentence: what it owns + what triggers it
+
+Example for a HubSpot→BigQuery data pipeline:
 ```json
 {
   "questions": [{
-    "question": "What triggers the pipeline?",
-    "header": "Trigger",
-    "multiSelect": false,
+    "question": "Which agent roles should this project have?",
+    "header": "Agents",
+    "multiSelect": true,
     "options": [
-      {"label": "Scheduled Airflow DAG", "description": "Time-based — daily or hourly cron (Recommended — most common for analytics pipelines)"},
-      {"label": "Webhook from upstream system", "description": "Event-driven — HubSpot, Kafka, or similar push"},
-      {"label": "Manual run by analyst", "description": "Ad-hoc — no automated trigger in v1"}
+      {"label": "pipeline-orchestrator", "description": "Breaks complex DAG tasks into steps; delegates SQL work to sql-reviewer (Recommended)"},
+      {"label": "sql-reviewer", "description": "Reviews every .sql and dbt model; checks BigQuery dialect, cost, and naming conventions (Recommended)"},
+      {"label": "data-validator", "description": "Runs after each DAG execution to verify row counts, nulls, and schema against expectations"},
+      {"label": "requirements-analyst", "description": "Writes specs and acceptance criteria for new pipeline features before implementation begins"}
     ]
   }]
 }
 ```
 
-### Branch priority order (use your own judgment — this is a guide)
+### 3b — Generate agent content
 
-1. Stack / language — if still unknown
-2. Primary users — "who runs/uses this daily?"
-3. Core output — "what does this produce or deliver?"
-4. Trigger / entry point — "what starts the process?"
-5. Scope boundary — "what is explicitly NOT in v1?"
-6. Key risk — "what is most likely to break or block this?"
-7. Commands — run / test / lint (stack-specific options via AskUserQuestion)
-8. Any remaining open branch that affects agent/hook/rule selection
+For EACH confirmed agent, Claude writes the full agent markdown.
+Use all BA spec context (stack, tools, file paths, domain) — not placeholders.
 
-### Ending the loop
-
-When stop condition is met, print a spec summary (5–8 bullets) and say:
-> EN: "Got it — spec is clear. Moving on to select agents and tools."
-> VI: "Đủ rồi — spec đã rõ. Tiếp tục chọn agents và tools."
-
-Do NOT ask "is this correct?" — proceed directly to STEP 3.
-
+Template structure (adapt freely):
+```markdown
+---
+name: <agent-name>
+description: >
+  <When to auto-invoke this agent — specific trigger phrases for this project>
+model: claude-opus-4-7   # for planning/BA roles; claude-sonnet-4-6 for others
 ---
 
-## STEP 3 — Agents
+# <Agent Name> — <Project Name>
 
-Use `AskUserQuestion` with **two consecutive calls** (7 agents, max 4 per call).
+## Role
+<One paragraph: what this agent owns, domain context, why it exists>
 
-**Before calling:** Analyze `name`, `description`, and `stack` to determine which agents are most relevant.
-Mark recommended agents with `(Recommended)` in their description. Put recommended agents first within each call.
+## Responsibilities
+- <specific task using actual stack/tools/paths from BA spec>
+- <another specific task>
 
-Agent catalog for reference:
-- `orchestrator` — High-level task planner; delegates to other agents
-- `code-reviewer` — Read-only code quality reviewer; runs before commit
-- `qa-tester` — Test runner; verifies features after build
-- `documentation` — Doc writer; updates README, docs/, CHANGELOG
-- `ba-agent` — Business Analyst; writes specs and business rules (Opus)
-- `sql-reviewer` — BigQuery/dbt SQL reviewer; checks dialect and performance
-- `data-validator` — Data quality checker; validates pipeline output
+## Constraints
+- <explicit boundary — what it will NOT do, to prevent overlap>
+- <another boundary>
 
-**Recommendation heuristics (apply your own reasoning beyond these):**
-- Data pipeline / Airflow / dbt → `data-validator`, `sql-reviewer`, `orchestrator` likely needed
-- Web app / API → `code-reviewer`, `qa-tester` likely needed
-- Early-stage / greenfield → `ba-agent` useful for spec writing
-- Any project with multiple agents → `orchestrator` useful
+## Handoffs
+- Delegates to: <other agents in this project>
+- Receives from: <which agents or user actions trigger it>
+```
 
-**Call 1** — first 4 agents (reorder to put most relevant first for this project):
-Build the options array dynamically with appropriate descriptions and "(Recommended)" markers.
-
-**Call 2** — remaining 3 agents:
-Same approach — reorder and annotate based on context.
-
-Merge results from both calls into a single `agents` list.
+Store each as: `{"path": ".claude/agents/<name>.md", "content": "<full markdown>"}`
 
 ---
 
 ## STEP 4 — MCP Integrations
 
-Use `AskUserQuestion` with **two consecutive calls** (8 MCPs, max 4 per call).
+Only propose MCPs with clear justification from the BA spec.
+Do NOT show a full catalog — only what fits this project.
 
-**Before calling:** Infer likely MCPs from `description` and `stack`:
-- Mentions "GitHub", "PR", "code review" → recommend GitHub
-- Mentions "Jira", "ticket", "sprint", "Confluence" → recommend Atlassian
-- Mentions "Notion", "wiki", "docs" → recommend Notion
-- Mentions "Slack", "notification", "alert" → recommend Slack
-- Mentions "API", "Postman", "endpoint" → recommend Postman
-- Mentions "design", "UI", "Figma" → recommend Figma
-- Mentions "email", "Gmail" → recommend Gmail
-- Mentions "Drive", "spreadsheet", "GSheet" → recommend Google Drive
+Infer from BA spec keywords:
+- "GitHub", "PR", "code review" → GitHub MCP
+- "Jira", "ticket", "Confluence" → Atlassian MCP
+- "Notion", "wiki" → Notion MCP
+- "Slack", "alert", "notification" → Slack MCP
+- "Postman", "API testing", "endpoint" → Postman MCP
+- "Figma", "design", "UI" → Figma MCP
+- "Gmail", "email" → Gmail MCP
+- "Drive", "GSheet", "spreadsheet" → Google Drive MCP
 
-**Call 1** — 4 MCPs most relevant to this project (put recommended first, add "(Recommended)" to description):
-Build the options array dynamically — choose the 4 most likely MCPs for call 1, remaining 4 for call 2.
+Use AskUserQuestion (multiSelect: true). Only show MCPs with a match.
+If fewer than 2 matches found, offer "None — skip MCP setup" as first option.
 
-**Call 2** — remaining 4 MCPs.
+For each option, explain WHY it fits this project specifically:
+```json
+{
+  "questions": [{
+    "question": "Which external integrations does Claude need access to?",
+    "header": "MCPs",
+    "multiSelect": true,
+    "options": [
+      {"label": "GitHub", "description": "For reading PRs and issues — your pipeline code lives on GitHub (Recommended)"},
+      {"label": "Slack", "description": "For posting pipeline alerts — mentioned as the notification channel"},
+      {"label": "None", "description": "Skip MCP setup for now"}
+    ]
+  }]
+}
+```
 
-Merge results. If nothing selected in either call, `mcps: []`.
+MCP server configs are fixed per provider — stored as `mcps: ["github", "slack"]` in spec.
+Python script writes the `.mcp.json` from this list.
 
 ---
 
 ## STEP 5 — Hooks
 
-Use `AskUserQuestion` tool. Build options dynamically from commands gathered in Step 2:
+Use `AskUserQuestion` (multiSelect: true). Build descriptions from actual commands from STEP 2.
 
-- `pre-write` → mention actual `lint_cmd` if set, or "(no lint command configured)"
-- `post-edit` → mention actual `test_cmd` if set, or "(no test command configured)"
-- `session-end` → always available; appends a session marker to `CLAUDE.local.md` on Stop
+| Hook | Event | Recommend when |
+|------|-------|----------------|
+| `pre-write` | PreToolUse → Write | `lint_cmd` is known |
+| `post-edit` | PostToolUse → Edit | `test_cmd` is known |
+| `session-end` | Stop | Always |
+| `notification` | Notification | CI, async workflows, or alerts mentioned |
 
-Four hooks available. Build descriptions dynamically from commands gathered in Step 2:
-
-| Hook | Event | Always offer? | When to recommend |
-|------|-------|--------------|-------------------|
-| `pre-write` | PreToolUse → Write | Yes | `lint_cmd` is set |
-| `post-edit` | PostToolUse → Edit | Yes | `test_cmd` is set |
-| `session-end` | Stop | Yes | Always — no command needed |
-| `notification` | Notification | Yes | Projects with CI, alerts, or async workflows |
-
-Example (Python + ruff + pytest):
+Example with ruff + pytest from STEP 2:
 ```json
 {
   "questions": [{
@@ -229,95 +279,118 @@ Example (Python + ruff + pytest):
     "header": "Hooks",
     "multiSelect": true,
     "options": [
-      {"label": "pre-write", "description": "Runs `ruff check .` before Claude writes a file (Recommended)"},
-      {"label": "post-edit", "description": "Runs `pytest` after Claude edits a file (Recommended)"},
-      {"label": "session-end", "description": "Appends session marker to CLAUDE.local.md when Claude stops (Recommended)"},
-      {"label": "notification", "description": "Logs all Claude Code notifications to .claude/notifications.log"}
+      {"label": "pre-write", "description": "Runs `ruff check .` before Claude writes any file (Recommended)"},
+      {"label": "post-edit", "description": "Runs `pytest` after Claude edits any file (Recommended)"},
+      {"label": "session-end", "description": "Appends session marker to CLAUDE.local.md on Stop (Recommended)"},
+      {"label": "notification", "description": "Logs Claude Code notifications to .claude/notifications.log"}
     ]
   }]
 }
 ```
+
+Store as `hooks: ["pre-write", "post-edit", "session-end"]`.
+Python script writes hook scripts and registers them in `settings.json`.
 
 ---
 
-## STEP 6 — Skills
+## STEP 6 — Slash Commands
 
-Skill catalog (6 skills, 4 per AskUserQuestion call max → use **two consecutive calls**):
+Do NOT scaffold generic commands. Design commands around workflows THIS project actually repeats.
+A slash command is worth creating when: multi-step, repeated, currently done manually.
 
-| Skill | When most relevant |
-|-------|-------------------|
-| `build-feature` | New / greenfield project |
-| `debug` | Any project — universal |
-| `review` | Any project — pre-merge readiness check |
-| `write-tests` | Existing code with low coverage; data pipelines |
-| `deploy` | Has `run_cmd`, CI/CD, or deployment mentioned |
-| `refactor` | Existing codebase, technical debt mentioned |
+### 6a — Propose commands
 
-**Before calling:** use heuristics above to decide which 4 go in Call 1 (most relevant first).
+From BA spec: identify 2–4 high-value recurring workflows.
+Name commands after the actual workflow — not abstract categories.
+Example: `/scaffold-dag-feature` not `/build-feature`; `/validate-pipeline` not `/write-tests`.
 
-**Call 1** — 4 most relevant skills for this project (put recommended ones first with `(Recommended)`):
+Use AskUserQuestion (multiSelect: true, max 4 options):
 ```json
 {
   "questions": [{
-    "question": "Select skills to scaffold (1/2):",
-    "header": "Skills 1",
+    "question": "Which slash commands should Claude know for this project?",
+    "header": "Commands",
     "multiSelect": true,
     "options": [
-      {"label": "build-feature", "description": "<why this matters for THIS project>"},
-      {"label": "debug",         "description": "<universal — or skip if only non-code work>"},
-      {"label": "review",        "description": "<pre-merge check — recommended for any project with git>"},
-      {"label": "write-tests",   "description": "<why this matters for THIS stack>"}
+      {"label": "scaffold-dag-feature", "description": "BA spec → staging model → mart → Airflow DAG → validation in one flow (Recommended)"},
+      {"label": "validate-pipeline-output", "description": "Runs data-validator checks on the latest DAG run — row counts, nulls, schema"},
+      {"label": "sync-docs", "description": "Updates README and OpenMetadata descriptions after model changes"},
+      {"label": "review-sql-changes", "description": "Runs sql-reviewer on staged .sql/.yml files before commit"}
     ]
   }]
 }
 ```
 
-**Call 2** — remaining 2 skills:
-```json
-{
-  "questions": [{
-    "question": "Select skills to scaffold (2/2):",
-    "header": "Skills 2",
-    "multiSelect": true,
-    "options": [
-      {"label": "deploy",   "description": "<why this matters or skip hint>"},
-      {"label": "refactor", "description": "<why this matters or skip hint>"}
-    ]
-  }]
-}
+### 6b — Generate command content
+
+For EACH confirmed command, Claude writes the full SKILL.md.
+Reference actual paths, tools, agents, and patterns from BA spec — not generic steps.
+
+Template structure:
+```markdown
+---
+name: <command-name>
+description: >
+  <When to use this. Specific trigger for this project.>
+allowed-tools:
+  - <tools needed>
+---
+
+# <Command Name>
+
+## When to use
+<Specific situation that triggers this command in this project>
+
+## Steps
+1. <Concrete step with actual file paths, commands, agent calls from BA spec>
+2. <Next step>
+3. <...>
+
+## Done when
+<How to verify the command completed correctly for this project>
 ```
 
-Merge results from both calls into a single `skills` list.
+Store each as: `{"path": ".claude/skills/<command-name>/SKILL.md", "content": "<full markdown>"}`
 
 ---
 
 ## STEP 7 — Code Style Rules
 
-Auto-suggest based on stack from Step 2:
-- Always suggest: `general`
-- If Python in stack: suggest `python`
-- If TypeScript/JavaScript/React/Node: suggest `typescript`
-- If SQL/dbt/BigQuery/Postgres: suggest `sql`
+### 7a — Confirm rule sets
 
-Before calling AskUserQuestion, tell the user which rules are recommended based on their stack. Then use `AskUserQuestion` tool:
-
+Auto-suggest from stack. Always include `general`.
+Use AskUserQuestion (multiSelect: true):
 ```json
 {
   "questions": [{
-    "question": "Select code style rules to generate (pick based on your stack):",
+    "question": "Which rule sets to generate?",
     "header": "Rules",
     "multiSelect": true,
     "options": [
-      {"label": "general", "description": "Always loaded — applies every session (recommended)"},
-      {"label": "python", "description": "Auto-loaded for **/*.py files"},
-      {"label": "typescript", "description": "Auto-loaded for **/*.{ts,tsx,js,jsx} files"},
-      {"label": "sql", "description": "Auto-loaded for **/*.sql files"}
+      {"label": "general", "description": "Always loaded — project context + critical constraints (Recommended)"},
+      {"label": "python", "description": "Auto-loaded for *.py — ruff, type hints, project conventions"},
+      {"label": "sql", "description": "Auto-loaded for *.sql — BigQuery dialect, dbt patterns, naming"},
+      {"label": "typescript", "description": "Auto-loaded for *.ts/*.tsx/*.js/*.jsx"}
     ]
   }]
 }
 ```
 
-After user responds, ensure `general` is always included even if not selected.
+### 7b — Generate rule content
+
+Do NOT copy generic templates. Write rules that reference actual project constraints.
+
+`general` rule always includes:
+- Brief project context (so Claude remembers domain every session)
+- Critical constraints from BA spec (e.g., "never DROP tables", "always read specs before coding")
+- Key workflow rules (lint before commit, read BA doc before implementing)
+
+Stack-specific rules include:
+- Actual tools (ruff, pytest, dbt, etc.) with actual commands
+- Naming conventions specific to this project
+- Patterns or anti-patterns discovered during BA discovery
+
+Store each as: `{"path": ".claude/rules/<name>.md", "content": "<full markdown>"}`
 
 ---
 
@@ -427,109 +500,116 @@ If user selects "No", restart from STEP 1.
 
 ## STEP 9 — Generate Files
 
-Build the JSON spec from all collected answers, then run the generator script.
+Build the JSON spec, then run the generator. The spec carries **full file contents** — the Python
+script is a pure file writer with no template logic.
 
-### Spec format
+### STEP 9a — Generate CLAUDE.md content (Claude writes this)
 
-Write the spec to `~/.claude/.init_spec.json` (not inside the target project):
+Before building the spec, Claude writes the project's `CLAUDE.md` inline.
+Do NOT copy a template — write from BA spec context.
+
+Structure:
+```markdown
+# <Project Name>
+
+## Project context
+<2–3 sentences: what this project does, who uses it, why it matters>
+
+## Stack
+<List: language, frameworks, tools — from BA spec>
+
+## Commands
+- run: `<run_cmd or TBD>`
+- test: `<test_cmd or TBD>`
+- lint: `<lint_cmd or TBD>`
+
+## Critical constraints
+<From BA spec Tier 3: risks, rules Claude must always respect>
+
+## Agent routing
+<For each agent: when to invoke it, what it owns>
+
+## Key paths
+<Important directories/files for this project>
+```
+
+### STEP 9b — Spec format
+
+Write spec to `~/.claude/.init_spec.json`:
 
 ```json
 {
-  "name": "<from Step 1>",
-  "description": "<from Step 1>",
-  "stack": "<from Step 2>",
-  "run_cmd": "<from Step 2, or empty string>",
-  "test_cmd": "<from Step 2, or empty string>",
-  "lint_cmd": "<from Step 2, or empty string>",
-  "agents": ["<selected agent names>"],
-  "mcps": ["<selected MCP display names>"],
+  "name": "<project name>",
+  "description": "<project description>",
+  "stack": "<from STEP 2>",
+  "run_cmd": "<or empty>",
+  "test_cmd": "<or empty>",
+  "lint_cmd": "<or empty>",
+  "mcps": ["github", "slack"],
   "hooks": ["pre-write", "post-edit", "session-end"],
-  "skills": ["<selected skill names>"],
-  "rules": ["<selected rule keys: general|python|typescript|sql>"],
   "env": {"KEY": "# TODO: set value"},
-  "model": "<model ID, or empty string to inherit global>",
-  "permission_preset": "<standard|data-safe|strict>",
-  "clarification_rounds": [
-    {"question": "<question text>", "answer": "<user answer>"}
-  ],
-  "lang": "<en|vi>"
+  "model": "<model ID or empty string>",
+  "permission_preset": "standard",
+  "lang": "en",
+  "files": [
+    {"path": "CLAUDE.md",          "content": "<Claude-generated content from 9a>"},
+    {"path": "CLAUDE.local.md",    "content": "<session notes template>"},
+    {"path": ".claude/agents/<name>.md",          "content": "<from STEP 3b>"},
+    {"path": ".claude/skills/<command>/SKILL.md", "content": "<from STEP 6b>"},
+    {"path": ".claude/rules/general.md",          "content": "<from STEP 7b>"},
+    {"path": ".claude/rules/<name>.md",           "content": "<from STEP 7b, per stack>"},
+    {"path": ".claude/registry.md",               "content": "<task log template with project name>"},
+    {"path": "docs/adr/0001-bootstrap.md",        "content": "<ADR with actual decisions from this session>"},
+    {"path": "docs/learnings.md",                 "content": "<empty learnings log with date>"}
+  ]
 }
 ```
 
-### Detect Python command
+**Key:** `files` contains every Claude-generated file. The Python script writes each `path`/`content`
+pair as-is — no template substitution needed.
 
-Before running, detect which Python command is available:
+Files NOT in `files` (Python script generates these from spec metadata):
+- `.gitignore` — always append `CLAUDE.local.md`
+- `.mcp.json` — from `mcps` list, fixed config per provider
+- `.claude/settings.json` — from `hooks`, `model`, `permission_preset`, `env`
+- `.claude/hooks/*.sh|.ps1` — from `hooks` list + `lint_cmd`/`test_cmd`
 
+### STEP 9c — Run the generator
+
+Detect Python command:
 ```bash
 python --version 2>&1 || python3 --version 2>&1 || py --version 2>&1
 ```
 
-Use the first one that succeeds: `python`, `python3`, or `py` (Windows Store).
-
-### Run the generator
-
+Run:
 ```bash
 # Unix / macOS
 python3 ~/.claude/skills/init-agentic/scripts/init_agentic.py \
   --from-spec ~/.claude/.init_spec.json "<target>"
 
-# Windows (PowerShell)
+# Windows
 python "$HOME\.claude\skills\init-agentic\scripts\init_agentic.py" `
   --from-spec "$HOME\.claude\.init_spec.json" "<target>"
 ```
 
-After generation succeeds, delete the spec file:
-
+Delete spec after success:
 ```bash
-rm ~/.claude/.init_spec.json                      # Unix
-Remove-Item "$HOME\.claude\.init_spec.json"       # Windows PowerShell
+rm ~/.claude/.init_spec.json            # Unix
+Remove-Item "$HOME\.claude\.init_spec.json"  # Windows
 ```
 
-### Fallback (if Bash unavailable or Python not found)
+### Fallback — if Python unavailable
 
-Use the Write tool to generate each file directly. For each file:
-1. Use the Read tool to load the template from `~/.claude/skills/init-agentic/references/`
-2. Replace all placeholders with collected answers
-3. Write to the target path
+Use the Write tool directly. For each item in `files`, write `content` to `path` (relative to target).
+Then write `.gitignore`, `.mcp.json`, `.claude/settings.json`, hook scripts using formulas below.
 
-Placeholder map:
-- `<PROJECT_NAME>` → project name (Step 1)
-- `<DESCRIPTION>` → description (Step 1)
-- `<STACK>` → stack (Step 2)
-- `<DATE>` → today's date (YYYY-MM-DD)
-
-Files to generate (write only selected items):
-
-| Target path | Template source | Notes |
-|-------------|-----------------|-------|
-| `CLAUDE.md` | Compose from answers | Use gen_claude_md() structure |
-| `CLAUDE.local.md` | `references/docs/claude-local.md` | Replace `<DATE>` |
-| `.gitignore` | Create or append | Always add `CLAUDE.local.md` entry |
-| `.mcp.json` | Compose from MCP catalog | Only if MCPs selected |
-| `.claude/settings.json` | Compose from agents + hooks | See hook registration below |
-| `.claude/registry.md` | `references/docs/registry.md` | Replace `<DATE>` |
-| `.claude/agents/<name>.md` | `references/agents/<name>.md` | Replace `<PROJECT_NAME>` |
-| `.claude/rules/<filename>` | `references/rules/<name>.md` | No substitution needed |
-| `.claude/skills/<name>/SKILL.md` | `references/skills/<name>.md` | Replace `<STACK>` |
-| `.claude/commands/standup.md` | `references/commands/standup.md` | Always generated |
-| `.claude/commands/review.md` | `references/commands/review.md` | Always generated |
-| `.claude/commands/run-tests.md` | `references/commands/run-tests.md` | Only if qa-tester selected |
-| `.claude/commands/validate.md` | `references/commands/validate.md` | Only if data-validator selected |
-| `.claude/commands/sync-docs.md` | `references/commands/sync-docs.md` | Only if documentation selected |
-| `.claude/hooks/pre-write.ps1\|.sh` | Compose | Only if pre-write selected |
-| `.claude/hooks/post-edit.ps1\|.sh` | Compose | Only if post-edit selected |
-| `.claude/hooks/session-end.ps1\|.sh` | Compose | Only if session-end selected |
-| `.claude/hooks/notification.ps1\|.sh` | Compose | Only if notification selected |
-| `docs/adr/0001-bootstrap.md` | `references/docs/adr-0001.md` | Replace all placeholders |
-| `docs/learnings.md` | `references/docs/learnings.md` | Replace `<DATE>` |
-
-**Hooks MUST be registered in `.claude/settings.json`** under the `hooks` key:
-- `pre-write` → event `PreToolUse`, matcher `Write`
-- `post-edit` → event `PostToolUse`, matcher `Edit`
-- `session-end` → event `Stop` (no matcher)
-- `notification` → event `Notification` (no matcher)
-- Windows command: `powershell -File .claude/hooks/<name>.ps1`
-- Unix command: `.claude/hooks/<name>.sh`
+**Hook registration in `.claude/settings.json`:**
+- `pre-write` → event `PreToolUse`, matcher `Write`, command = lint_cmd
+- `post-edit` → event `PostToolUse`, matcher `Edit`, command = test_cmd
+- `session-end` → event `Stop`, command appends marker to `CLAUDE.local.md`
+- `notification` → event `Notification`, command logs to `.claude/notifications.log`
+- Windows: `powershell -File .claude/hooks/<name>.ps1`
+- Unix: `.claude/hooks/<name>.sh`
 
 ---
 

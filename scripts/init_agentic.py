@@ -40,10 +40,10 @@ _setup_encoding()
 
 IS_WINDOWS = platform.system() == "Windows"
 
-# ── Reference file paths ──────────────────────────────────────────────────────
-SKILL_BASE_DIR  = Path(__file__).resolve().parent.parent
-AGENTS_REF_DIR  = SKILL_BASE_DIR / "references" / "agents"
-SKILLS_REF_DIR  = SKILL_BASE_DIR / "references" / "skills"
+# ── Reference file paths (wizard / legacy mode only) ──────────────────────────
+SKILL_BASE_DIR   = Path(__file__).resolve().parent.parent
+AGENTS_REF_DIR   = SKILL_BASE_DIR / "references" / "agents"
+SKILLS_REF_DIR   = SKILL_BASE_DIR / "references" / "skills"
 COMMANDS_REF_DIR = SKILL_BASE_DIR / "references" / "commands"
 
 
@@ -579,6 +579,8 @@ def validate_spec(spec: dict) -> dict:
     if not spec["stack"].strip():
         print(warn("Spec key 'stack' must not be empty."))
         sys.exit(1)
+    # New spec format uses 'files' array; legacy format uses individual lists
+    spec.setdefault("files", [])
     for key in ("agents", "mcps", "hooks", "skills", "rules", "grilling_decisions"):
         spec.setdefault(key, [])
     for key in ("run_cmd", "test_cmd", "lint_cmd", "model"):
@@ -586,12 +588,18 @@ def validate_spec(spec: dict) -> dict:
     spec.setdefault("lang", "en")
     spec.setdefault("env", {})
     spec.setdefault("permission_preset", "standard")
-    for agent in spec["agents"]:
-        if agent not in AGENT_TEMPLATES:
-            print(warn(f"Unknown agent '{agent}' -- skipped. Valid: {', '.join(AGENT_TEMPLATES)}"))
-    for rule in spec["rules"]:
-        if rule not in RULES_TEMPLATES:
-            print(warn(f"Unknown rule '{rule}' -- skipped. Valid: {', '.join(RULES_TEMPLATES)}"))
+    # Validate files array entries
+    for i, entry in enumerate(spec["files"]):
+        if not isinstance(entry, dict) or "path" not in entry or "content" not in entry:
+            print(warn(f"files[{i}] must have 'path' and 'content' keys -- skipped."))
+    # Legacy-only validation (wizard mode)
+    if not spec["files"]:
+        for agent in spec["agents"]:
+            if agent not in AGENT_TEMPLATES:
+                print(warn(f"Unknown agent '{agent}' -- skipped. Valid: {', '.join(AGENT_TEMPLATES)}"))
+        for rule in spec["rules"]:
+            if rule not in RULES_TEMPLATES:
+                print(warn(f"Unknown rule '{rule}' -- skipped. Valid: {', '.join(RULES_TEMPLATES)}"))
     return spec
 
 
@@ -709,10 +717,18 @@ def gen_settings(agents, hooks, env=None, model=None, permission_preset="standar
 
 
 def gen_mcp_json(mcps):
+    """Accept either display names (wizard) or short keys like 'github', 'slack' (spec)."""
+    # Build a reverse lookup: short key -> config entry
+    by_key = {cfg["name"]: cfg for cfg in MCP_CATALOG.values()}
     servers = {}
     for name in mcps:
+        if name == "None" or not name.strip():
+            continue
         if name in MCP_CATALOG:
             cfg = MCP_CATALOG[name]
+            servers[cfg["name"]] = {"type": cfg["type"], "url": cfg["url"]}
+        elif name.lower() in by_key:
+            cfg = by_key[name.lower()]
             servers[cfg["name"]] = {"type": cfg["type"], "url": cfg["url"]}
         else:
             print(warn(f"Unknown MCP '{name}' -- skipped."))
@@ -973,24 +989,59 @@ def update_portfolio(info: dict, target: Path) -> bool:
 
 
 # ── File generation ───────────────────────────────────────────────────────────
-def generate_files(info: dict, target: Path):
-    print(f"\n{h('Generating files...')}\n")
-    write_file(target / "CLAUDE.md",       gen_claude_md(info))
-    write_file(target / "CLAUDE.local.md", gen_claude_local())
-    if info.get("mcps"):
-        write_file(target / ".mcp.json", gen_mcp_json(info["mcps"]))
+
+def _write_infrastructure(info: dict, target: Path):
+    """Write formula-based files: settings.json, .mcp.json, hook scripts, .gitignore."""
+    # Extract agent names for settings.json (from files array or legacy agents list)
+    agent_names = []
+    for f in info.get("files", []):
+        p = f.get("path", "")
+        if p.startswith(".claude/agents/") and p.endswith(".md"):
+            agent_names.append(Path(p).stem)
+    if not agent_names:
+        agent_names = info.get("agents", [])
+
     write_file(target / ".claude" / "settings.json",
                gen_settings(
-                   info.get("agents", []),
+                   agent_names,
                    info.get("hooks", []),
                    env=info.get("env") or None,
                    model=info.get("model") or None,
                    permission_preset=info.get("permission_preset", "standard"),
                ))
+    if info.get("mcps"):
+        write_file(target / ".mcp.json", gen_mcp_json(info["mcps"]))
+    for hook in info.get("hooks", []):
+        if IS_WINDOWS:
+            content, ext = gen_hook_ps1(hook, info), ".ps1"
+        else:
+            content, ext = gen_hook_bash(hook, info), ".sh"
+        hook_path = target / ".claude" / "hooks" / f"{hook}{ext}"
+        write_file(hook_path, content)
+        if not IS_WINDOWS:
+            os.chmod(hook_path, 0o755)
+    update_gitignore(target, ["CLAUDE.local.md"])
+
+
+def _write_spec_files(info: dict, target: Path):
+    """New path: write every file from the 'files' array in the spec (Claude-generated content)."""
+    for entry in info.get("files", []):
+        path_str = entry.get("path", "").strip()
+        content  = entry.get("content", "")
+        if not path_str:
+            print(warn("Skipping spec file entry with empty path."))
+            continue
+        write_file(target / path_str, content)
+
+
+def _generate_from_templates(info: dict, target: Path):
+    """Legacy path: generate agents/skills/rules from reference templates (wizard mode)."""
+    write_file(target / "CLAUDE.md",       gen_claude_md(info))
+    write_file(target / "CLAUDE.local.md", gen_claude_local())
     write_file(target / ".claude" / "registry.md", gen_registry())
     for agent_key in info.get("agents", []):
         if agent_key not in AGENT_TEMPLATES:
-            print(warn(f"Agent '{agent_key}' not found in {AGENTS_REF_DIR} -- skipped."))
+            print(warn(f"Agent '{agent_key}' not in references/agents/ -- skipped."))
             continue
         content = AGENT_TEMPLATES[agent_key].replace("<PROJECT_NAME>", info["name"])
         write_file(target / ".claude" / "agents" / f"{agent_key}.md", content)
@@ -1007,20 +1058,10 @@ def generate_files(info: dict, target: Path):
         else:
             content = make_skill(skill_name, f"Skill: {skill_name}", info["stack"])
         write_file(target / ".claude" / "skills" / skill_name / "SKILL.md", content)
-    for hook in info.get("hooks", []):
-        if IS_WINDOWS:
-            content, ext = gen_hook_ps1(hook, info), ".ps1"
-        else:
-            content, ext = gen_hook_bash(hook, info), ".sh"
-        hook_path = target / ".claude" / "hooks" / f"{hook}{ext}"
-        write_file(hook_path, content)
-        if not IS_WINDOWS:
-            os.chmod(hook_path, 0o755)
-    # Commands — universal + agent-conditional
     commands_to_gen = {"standup", "review"}
-    if "qa-tester"       in info.get("agents", []): commands_to_gen.add("run-tests")
-    if "data-validator"  in info.get("agents", []): commands_to_gen.add("validate")
-    if "documentation"   in info.get("agents", []): commands_to_gen.add("sync-docs")
+    if "qa-tester"      in info.get("agents", []): commands_to_gen.add("run-tests")
+    if "data-validator" in info.get("agents", []): commands_to_gen.add("validate")
+    if "documentation"  in info.get("agents", []): commands_to_gen.add("sync-docs")
     for cmd_name in sorted(commands_to_gen):
         cmd_ref = COMMANDS_REF_DIR / f"{cmd_name}.md"
         if cmd_ref.exists():
@@ -1029,7 +1070,18 @@ def generate_files(info: dict, target: Path):
     write_file(target / "docs" / "adr" / "0001-bootstrap.md",
                gen_adr(info, info.get("grilling_decisions", [])))
     write_file(target / "docs" / "learnings.md", gen_learnings())
-    update_gitignore(target, ["CLAUDE.local.md"])
+
+
+def generate_files(info: dict, target: Path):
+    print(f"\n{h('Generating files...')}\n")
+    if info.get("files"):
+        # Claude-driven path: spec carries full file contents
+        _write_spec_files(info, target)
+    else:
+        # Legacy / wizard path: generate from reference templates
+        _generate_from_templates(info, target)
+    # Infrastructure always formula-based
+    _write_infrastructure(info, target)
 
 
 def print_summary(info: dict, target: Path, portfolio_updated: bool = False):
