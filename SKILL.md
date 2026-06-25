@@ -542,7 +542,51 @@ After generating files, update `~/.claude/CLAUDE.md` Portfolio Registry table:
 
 ## STEP 11 — Summary
 
-Print a final summary in the chosen language:
-- List generated files
-- Confirm Portfolio Registry was updated (or show manual row if not)
-- Next steps: add CLAUDE.local.md to .gitignore, fill in TODO commands, open Claude Code
+Print a final summary in the chosen language with three sections:
+
+### Section A — Generated files (list only what was actually created)
+
+```
+your-project/
+├── CLAUDE.md              ← project context Claude reads every session
+├── CLAUDE.local.md        ← your private session notes (add to .gitignore)
+├── .mcp.json              ← MCP server config (if MCPs selected)
+├── .claude/
+│   ├── settings.json      ← permissions + hook registrations
+│   ├── registry.md        ← task log: what each agent did and when
+│   ├── agents/            ← one file per agent (Claude reads when delegating)
+│   ├── rules/             ← code style rules, auto-loaded by file type
+│   ├── skills/            ← slash commands you can invoke in any session
+│   └── hooks/             ← scripts that run before/after Claude's actions
+└── docs/
+    ├── adr/0001-bootstrap.md  ← why this structure was chosen
+    └── learnings.md           ← lessons captured across sessions
+```
+
+### Section B — What each part does (explain in plain language, adapted to selections made)
+
+For each file/folder that was generated, give one sentence explaining its role.
+Use the actual project name and stack in the explanation — not generic placeholders.
+
+Example for a Python + Airflow project:
+
+| Part | Role |
+|------|------|
+| `CLAUDE.md` | Project bible — stack, conventions, agent routing. Claude reads this first every session so you never repeat context. |
+| `CLAUDE.local.md` | Your scratchpad — blockers, current focus, session notes. Never committed. |
+| `.claude/agents/orchestrator.md` | When Claude sees a complex task, it delegates to this agent to break it into subtasks across your Airflow DAGs. |
+| `.claude/agents/data-validator.md` | Runs after pipeline execution to verify output counts, nulls, and schema match expectations. |
+| `.claude/rules/python.md` | Loaded automatically for every `.py` file — enforces ruff, type hints, and your dbt/Airflow patterns. |
+| `.claude/hooks/pre-write.ps1` | Runs `ruff check .` before Claude writes any file. Catches lint errors before they land in code. |
+| `.claude/registry.md` | Agent task log — what was done, by which agent, and when. Helps you pick up after a break. |
+| `docs/adr/0001-bootstrap.md` | Records why this agent structure was chosen for this project. |
+
+Generate this table dynamically using the actual agents, rules, hooks, and commands from this session.
+
+### Section C — Next steps (3–5 bullets, specific to this project)
+
+- Add `CLAUDE.local.md` to `.gitignore`
+- Fill in any TODO commands in `CLAUDE.md` (run, test, lint)
+- Commit `CLAUDE.md`, `.claude/`, `docs/` as the project baseline
+- Mention which agents are ready to use and how to invoke them (`/orchestrator`, etc.)
+- If MCP selected: remind to configure credentials in `.mcp.json`
