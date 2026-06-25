@@ -5,7 +5,7 @@ description: >
   Trigger: "init project", "bootstrap agents", "setup claude", "init agentic",
   "grill me on this project", "stress-test my plan", "scaffold agentic setup",
   "khởi tạo project", "tạo project mới", "bootstrap project".
-version: "3.4.0"
+version: "4.2.0"
 allowed-tools:
   - Read
   - Write
@@ -14,7 +14,7 @@ allowed-tools:
   - AskUserQuestion
 ---
 
-# Init Agentic v3.4 — Claude-driven Wizard
+# Init Agentic v4.2 — Claude-driven Wizard
 
 You are running the Init Agentic wizard. Follow EVERY step in order.
 Do NOT skip steps. Do NOT generate files before completing all steps.
@@ -82,64 +82,68 @@ Do NOT ask follow-up questions yet. Proceed immediately to STEP 2 with what you 
 
 ---
 
-## STEP 2 — Iterative Requirement Clarification
+## STEP 2 — Requirement Grilling (no round limit)
 
-This step replaces the old rigid stack questions and the optional grilling at the end.
-**Goal: reach a clear enough spec to generate meaningful files.**
+**Foundation:** This step uses the `grill-me` approach — interview the user relentlessly,
+walking down each branch of the decision tree, resolving dependencies between decisions
+one at a time. Ask ONE question per turn. Provide your recommended answer as the first option.
+**No artificial round limit. Continue until all open branches are resolved.**
 
-### How it works
+### Stop condition
 
-Analyze everything from STEP 1. Identify the most important gap — the single thing that,
-if answered, would most clarify the project. Ask it. Repeat until the spec is clear.
-
-**You decide when the spec is clear enough.** Stop when you know:
+Stop only when ALL of the following are known:
 - What the system does and for whom
 - The primary stack / language / framework
 - The core problem being solved
-- At least 1 risk or constraint
+- At least 1 key risk or constraint
 - Rough scope boundary (what is NOT in v1)
+- Commands: run, test, lint (or confirmed "none yet")
+- No unresolved dependency remains that would affect agent/tool selection
 
-Typically 3–6 rounds. Stop earlier if the STEP 1 answer was already detailed.
+If even one branch is unresolved and it affects agent/hook/rule recommendations — keep grilling.
 
-### Per-round process
+### Per-turn process
 
-Each round:
-1. Identify the single most important gap remaining
-2. Synthesize 2–3 specific answer options tailored to this project (not generic)
-3. Call `AskUserQuestion` (multiSelect: false) — auto-adds "Other" for free text input
-4. Record the answer, update your internal spec model
-5. Decide: spec clear enough? If yes → exit loop. If no → next round.
+1. Build a decision tree from everything known so far
+2. Find the highest-priority unresolved branch
+3. Synthesize 2–3 options tailored to THIS project — put your recommended answer first,
+   label it `(Recommended)` in the description
+4. Call `AskUserQuestion` (multiSelect: false, one question) — "Other" auto-appears for free text
+5. Record the answer; update the decision tree
+6. Check stop condition — if not met, go to next branch
 
-Example round for a vague data pipeline project:
+Example turn for a vague data pipeline project:
 ```json
 {
   "questions": [{
-    "question": "[2/?] What triggers the pipeline?",
-    "header": "Clarify 2",
+    "question": "What triggers the pipeline?",
+    "header": "Trigger",
     "multiSelect": false,
     "options": [
-      {"label": "Scheduled Airflow DAG (daily/hourly)", "description": "Time-based, no human action needed"},
-      {"label": "Webhook from upstream system (e.g. HubSpot)", "description": "Event-driven trigger"},
-      {"label": "Manual run by analyst", "description": "Ad-hoc, human-initiated"}
+      {"label": "Scheduled Airflow DAG", "description": "Time-based — daily or hourly cron (Recommended — most common for analytics pipelines)"},
+      {"label": "Webhook from upstream system", "description": "Event-driven — HubSpot, Kafka, or similar push"},
+      {"label": "Manual run by analyst", "description": "Ad-hoc — no automated trigger in v1"}
     ]
   }]
 }
 ```
 
-### Gap priority order (use your own reasoning, this is a guide)
+### Branch priority order (use your own judgment — this is a guide)
 
 1. Stack / language — if still unknown
 2. Primary users — "who runs/uses this daily?"
 3. Core output — "what does this produce or deliver?"
-4. Scope boundary — "what is NOT in v1?"
-5. Key risk — "what is most likely to break this?"
-6. Commands — run / test / lint (stack-specific options via AskUserQuestion)
-7. Anything else still ambiguous
+4. Trigger / entry point — "what starts the process?"
+5. Scope boundary — "what is explicitly NOT in v1?"
+6. Key risk — "what is most likely to break or block this?"
+7. Commands — run / test / lint (stack-specific options via AskUserQuestion)
+8. Any remaining open branch that affects agent/hook/rule selection
 
 ### Ending the loop
 
-When spec is clear, print a brief spec summary (5–8 bullet points) and say:
-> "Got enough context — moving on to select agents and tools."
+When stop condition is met, print a spec summary (5–8 bullets) and say:
+> EN: "Got it — spec is clear. Moving on to select agents and tools."
+> VI: "Đủ rồi — spec đã rõ. Tiếp tục chọn agents và tools."
 
 Do NOT ask "is this correct?" — proceed directly to STEP 3.
 
